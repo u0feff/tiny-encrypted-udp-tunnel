@@ -86,10 +86,11 @@ nevertheless,you can easily integrate your own encrytion algotirhm into this pro
 each encrypted message now includes random padding to make traffic analysis harder. the padding works as follows:
 
 - when encryption is enabled (via -a or -b), random padding (0-255 bytes) is automatically added to each message
-- padding format: [padding_length:1byte][actual_data][random_padding]
-- the entire packet including the padding length is encrypted, making it harder to detect patterns
+- padding format: [padding_length:1byte][random_padding][encrypted_data]
+- the padding_length byte and random padding are NOT encrypted, only the actual data is encrypted
+- this allows padding to be added/removed without affecting the encryption, making packet sizes vary
 - random data for padding is sourced from /dev/urandom when available, with fallback to rand()
 - this makes encrypted messages vary in size even for identical payloads, improving obfuscation
-- when messages are received and decrypted, padding is automatically stripped before forwarding
+- when messages are received, padding is automatically stripped before decryption and forwarding
 
 this feature is transparent and requires no configuration - it's automatically applied whenever encryption is enabled.
