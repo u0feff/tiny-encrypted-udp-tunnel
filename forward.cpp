@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <netdb.h>
 #include <ctype.h>
+#include <time.h>
 #include <map>
 #include <string>
 #include <vector>
@@ -29,6 +30,16 @@ char iv[100];
 const int buf_len = 20480;
 int use_chacha20 = 0; // 0 = XOR, 1 = ChaCha20
 
+// Connection pool configuration
+int pool_size = 3; // Number of connections in the pool
+int rotation_messages = 5; // Rotate connection after this many messages
+int enable_pool = 0; // Enable connection pooling (0 = disabled, 1 = enabled)
+
+// Session ID header format (8 bytes):
+// - 4 bytes: session ID (random, identifies the client session)
+// - 4 bytes: message counter (increments with each message)
+const int SESSION_HEADER_SIZE = 8;
+
 void handler(int num) {
 	int status;
 	int pid;
@@ -38,6 +49,192 @@ void handler(int num) {
 		}
 	}
 }
+
+// Generate a random session ID
+uint32_t generate_session_id() {
+	uint32_t session_id;
+	int fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		session_id = (uint32_t)time(NULL) ^ (uint32_t)getpid();
+	} else {
+		read(fd, &session_id, sizeof(session_id));
+		close(fd);
+	}
+	return session_id;
+}
+
+// Add session header to data
+// Returns new length after adding session header
+int add_session_header(char *data, int data_len, char *output, int max_output_len, uint32_t session_id, uint32_t msg_counter) {
+	if (data_len + SESSION_HEADER_SIZE > max_output_len) {
+		return -1; // Not enough space
+	}
+	
+	// Write session header (8 bytes)
+	uint32_t *header = (uint32_t*)output;
+	header[0] = htonl(session_id);
+	header[1] = htonl(msg_counter);
+	
+	// Copy data after header
+	memcpy(output + SESSION_HEADER_SIZE, data, data_len);
+	
+	return data_len + SESSION_HEADER_SIZE;
+}
+
+// Remove session header from data
+// Returns new length after removing header, or -1 on error
+// Populates session_id and msg_counter if not NULL
+int remove_session_header(char *data, int data_len, uint32_t *session_id, uint32_t *msg_counter) {
+	if (data_len < SESSION_HEADER_SIZE) {
+		return -1; // Invalid: need at least session header
+	}
+	
+	uint32_t *header = (uint32_t*)data;
+	if (session_id) *session_id = ntohl(header[0]);
+	if (msg_counter) *msg_counter = ntohl(header[1]);
+	
+	// Move data to beginning of buffer
+	int actual_data_len = data_len - SESSION_HEADER_SIZE;
+	memmove(data, data + SESSION_HEADER_SIZE, actual_data_len);
+	
+	return actual_data_len;
+}
+
+// Connection pool structure for client side
+struct ConnectionPool {
+	int sockets[10]; // Pool of socket file descriptors (max 10)
+	int current_index; // Current active connection index
+	int pool_size; // Number of connections in pool
+	uint32_t msg_count; // Number of messages sent on current connection
+	uint32_t session_id; // Unique session identifier
+	uint32_t global_msg_counter; // Global message counter for this session
+	
+	ConnectionPool(int size) {
+		pool_size = size > 10 ? 10 : size;
+		current_index = 0;
+		msg_count = 0;
+		session_id = generate_session_id();
+		global_msg_counter = 0;
+		for (int i = 0; i < 10; i++) {
+			sockets[i] = -1;
+		}
+	}
+	
+	~ConnectionPool() {
+		for (int i = 0; i < pool_size; i++) {
+			if (sockets[i] >= 0) {
+				close(sockets[i]);
+			}
+		}
+	}
+	
+	// Create a new socket connection
+	int create_connection(int family, const struct sockaddr_storage *remote_addr, socklen_t remote_addr_len) {
+		int sock = socket(family, SOCK_DGRAM, 0);
+		if (sock < 0) {
+			perror("socket");
+			return -1;
+		}
+		
+		// Set socket options
+		int yes = 1;
+		setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+		
+		// Set low timeout to detect hung connections faster
+		struct timeval tv;
+		tv.tv_sec = 5;
+		tv.tv_usec = 0;
+		setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		
+		// Connect to remote
+		int ret = connect(sock, (struct sockaddr *)remote_addr, remote_addr_len);
+		if (ret != 0) {
+			close(sock);
+			return -1;
+		}
+		
+		return sock;
+	}
+	
+	// Get current active socket, creating if needed
+	int get_active_socket(int family, const struct sockaddr_storage *remote_addr, socklen_t remote_addr_len) {
+		// Check if we need to rotate to next connection
+		if (msg_count >= rotation_messages && rotation_messages > 0) {
+			// Close current socket
+			if (sockets[current_index] >= 0) {
+				close(sockets[current_index]);
+				sockets[current_index] = -1;
+			}
+			
+			// Move to next connection in pool
+			current_index = (current_index + 1) % pool_size;
+			msg_count = 0;
+			
+			printf("Rotating to connection %d in pool\n", current_index);
+		}
+		
+		// Create connection if it doesn't exist
+		if (sockets[current_index] < 0) {
+			sockets[current_index] = create_connection(family, remote_addr, remote_addr_len);
+			if (sockets[current_index] < 0) {
+				return -1;
+			}
+			printf("Created new connection on index %d, socket fd=%d\n", current_index, sockets[current_index]);
+		}
+		
+		return sockets[current_index];
+	}
+	
+	// Try to send on current socket, fallback to next if it fails
+	int send_with_fallback(const char *data, int len, int family, const struct sockaddr_storage *remote_addr, socklen_t remote_addr_len) {
+		int attempts = 0;
+		int max_attempts = pool_size;
+		
+		while (attempts < max_attempts) {
+			int sock = get_active_socket(family, remote_addr, remote_addr_len);
+			if (sock < 0) {
+				attempts++;
+				current_index = (current_index + 1) % pool_size;
+				msg_count = 0;
+				continue;
+			}
+			
+			int ret = send(sock, data, len, MSG_NOSIGNAL);
+			if (ret >= 0) {
+				msg_count++;
+				global_msg_counter++;
+				return ret;
+			}
+			
+			// Send failed, close this socket and try next
+			printf("Send failed on socket %d, trying next connection\n", sock);
+			close(sockets[current_index]);
+			sockets[current_index] = -1;
+			current_index = (current_index + 1) % pool_size;
+			msg_count = 0;
+			attempts++;
+		}
+		
+		return -1; // All attempts failed
+	}
+};
+
+// Server-side session tracking
+struct ServerSession {
+	struct sockaddr_storage client_addr;
+	socklen_t client_addr_len;
+	int socket_fd;
+	uint32_t last_msg_counter;
+	time_t last_activity;
+	
+	ServerSession() : socket_fd(-1), last_msg_counter(0), last_activity(0) {
+		memset(&client_addr, 0, sizeof(client_addr));
+		client_addr_len = 0;
+	}
+};
+
+map<uint32_t, ServerSession> server_sessions; // Map session_id to ServerSession
 
 // ChaCha20 implementation
 // ChaCha20 is a stream cipher designed by D. J. Bernstein
@@ -431,12 +628,14 @@ int main(int argc, char *argv[]) {
 	memset(iv, 0, sizeof(iv));
 	strcpy(iv, "1234567890abcdef");
 	if (argc == 1) {
-		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd] [-c]\n");
+		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd] [-c] [-p pool_size] [-m rotation_messages]\n");
 		printf("  -c: use ChaCha20 encryption (default: XOR)\n");
+		printf("  -p: enable connection pooling with specified pool size (default: 3)\n");
+		printf("  -m: rotate connection after this many messages (default: 5, 0=disable rotation)\n");
 		return -1;
 	}
 	int no_l = 1, no_r = 1;
-	while ((opt = getopt(argc, argv, "l:r:a:b:ch")) != -1) {
+	while ((opt = getopt(argc, argv, "l:r:a:b:p:m:ch")) != -1) {
 		switch (opt) {
 		case 'l':
 			no_l = 0;
@@ -466,10 +665,21 @@ int main(int argc, char *argv[]) {
 			use_chacha20 = 1;
 			printf("Using ChaCha20 encryption\n");
 			break;
+		case 'p':
+			enable_pool = 1;
+			pool_size = atoi(optarg);
+			if (pool_size < 1) pool_size = 1;
+			if (pool_size > 10) pool_size = 10;
+			printf("Connection pooling enabled with pool size: %d\n", pool_size);
+			break;
+		case 'm':
+			rotation_messages = atoi(optarg);
+			printf("Rotation after %d messages (0=disabled)\n", rotation_messages);
+			break;
 		case 'h':
 			break;
 		default:
-			printf("ignore unknown <%s>", optopt);
+			printf("ignore unknown <%d>", optopt);
 		}
 	}
 
@@ -539,6 +749,21 @@ int main(int argc, char *argv[]) {
 			// Then decrypt the actual data
 			decrypt(buf, recv_len, keya);
 		}
+		
+		// Handle session header if connection pooling is enabled on server side
+		uint32_t session_id = 0;
+		uint32_t msg_counter = 0;
+		if (enable_pool) {
+			// Remove session header
+			int new_len = remove_session_header(buf, recv_len, &session_id, &msg_counter);
+			if (new_len < 0) {
+				printf("Error: invalid session header\n");
+				continue;
+			}
+			recv_len = new_len;
+			printf("Session ID: %u, Message counter: %u\n", session_id, msg_counter);
+		}
+		
 		buf[recv_len] = 0;
 		printf("recv_len: %d\n", (int)recv_len);
 		fflush(stdout);
@@ -576,15 +801,40 @@ int main(int argc, char *argv[]) {
 				fprintf(stderr, "Failed to resolve remote address\n");
 				exit(1);
 			}
-			int remote_fd = socket(remote_family, SOCK_DGRAM, 0);
-			if (remote_fd < 0) {
-				perror("socket");
-				exit(1);
+			
+			// Create connection pool if enabled, otherwise use single connection
+			ConnectionPool *conn_pool = NULL;
+			int remote_fd = -1;
+			
+			if (enable_pool) {
+				conn_pool = new ConnectionPool(pool_size);
+				printf("Client mode: Connection pool created with size %d, session ID: %u\n", 
+				       pool_size, conn_pool->session_id);
+			} else {
+				// Traditional single connection mode
+				remote_fd = socket(remote_family, SOCK_DGRAM, 0);
+				if (remote_fd < 0) {
+					perror("socket");
+					exit(1);
+				}
+				ret = connect(remote_fd, (struct sockaddr *) &remote_other, remote_other_len);
+				if (ret != 0) {
+					printf("connect return %d @2\n", ret);
+					exit(1);
+				}
 			}
-			ret = connect(remote_fd, (struct sockaddr *) &remote_other, remote_other_len);
-			if (ret != 0) {
-				printf("connect return %d @2\n", ret);
-				exit(1);
+
+			// Prepare and send initial packet
+			if (enable_pool && conn_pool) {
+				// Add session header first
+				int header_len = add_session_header(buf, recv_len, temp_buf, buf_len, 
+				                                     conn_pool->session_id, conn_pool->global_msg_counter);
+				if (header_len < 0) {
+					printf("Error adding session header\n");
+					exit(1);
+				}
+				memcpy(buf, temp_buf, header_len);
+				recv_len = header_len;
 			}
 
 			if (keyb[0]) {
@@ -595,12 +845,20 @@ int main(int argc, char *argv[]) {
 				memcpy(buf, temp_buf, padded_len);
 				recv_len = padded_len;
 			}
-			ret = send(remote_fd, buf, recv_len, 0);
+			
+			if (enable_pool && conn_pool) {
+				ret = conn_pool->send_with_fallback(buf, recv_len, remote_family, &remote_other, remote_other_len);
+			} else {
+				ret = send(remote_fd, buf, recv_len, 0);
+			}
 			printf("send return %d\n", ret);
 			if (ret < 0)
 				exit(-1);
 
-			setnonblocking(remote_fd);
+			// Set up epoll for both local and remote sockets
+			if (!enable_pool) {
+				setnonblocking(remote_fd);
+			}
 			setnonblocking(local_fd);
 			int epollfd = epoll_create1(0);
 			const int max_events = 4096;
@@ -616,13 +874,22 @@ int main(int argc, char *argv[]) {
 				printf("epoll_ctl return %d\n", ret);
 				exit(-1);
 			}
-			ev.events = EPOLLIN;
-			ev.data.fd = remote_fd;
-			ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, remote_fd, &ev);
-			if (ret < 0) {
-				printf("epoll_ctl return %d\n", ret);
-				exit(-1);
+			
+			// For traditional mode, add the single remote_fd to epoll
+			// For pool mode, we'll add sockets dynamically
+			if (!enable_pool) {
+				ev.events = EPOLLIN;
+				ev.data.fd = remote_fd;
+				ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, remote_fd, &ev);
+				if (ret < 0) {
+					printf("epoll_ctl return %d\n", ret);
+					exit(-1);
+				}
 			}
+			
+			// Track which sockets are in epoll for pool mode
+			bool pool_sockets_in_epoll[10] = {false};
+			
 			for (;;) {
 				int nfds = epoll_wait(epollfd, events, max_events, 180 * 1000);
 				if (nfds <= 0) {
@@ -632,6 +899,7 @@ int main(int argc, char *argv[]) {
 				int n;
 				for (n = 0; n < nfds; ++n) {
 					if (events[n].data.fd == local_fd) {
+						// Received data from local client
 						ssize_t recv_len2 = recv(local_fd, buf, buf_len, 0);
 						if (recv_len2 < 0) {
 							printf("recv return %ld @1", recv_len2);
@@ -650,6 +918,20 @@ int main(int argc, char *argv[]) {
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@1\n", recv_len2);
+						
+						// Prepare outgoing packet
+						if (enable_pool && conn_pool) {
+							// Add session header first
+							int header_len = add_session_header(buf, recv_len2, temp_buf, buf_len, 
+							                                     conn_pool->session_id, conn_pool->global_msg_counter);
+							if (header_len < 0) {
+								printf("Error adding session header\n");
+								continue;
+							}
+							memcpy(buf, temp_buf, header_len);
+							recv_len2 = header_len;
+						}
+						
 						if (keyb[0]) {
 							// First encrypt the data
 							encrypt(buf, recv_len2, keyb);
@@ -658,17 +940,39 @@ int main(int argc, char *argv[]) {
 							memcpy(buf, temp_buf, padded_len);
 							recv_len2 = padded_len;
 						}
-						ret = send(remote_fd, buf, recv_len2, 0);
+						
+						if (enable_pool && conn_pool) {
+							ret = conn_pool->send_with_fallback(buf, recv_len2, remote_family, &remote_other, remote_other_len);
+							
+							// Add current active socket to epoll if not already there
+							int active_sock = conn_pool->sockets[conn_pool->current_index];
+							if (active_sock >= 0 && !pool_sockets_in_epoll[conn_pool->current_index]) {
+								setnonblocking(active_sock);
+								ev.events = EPOLLIN;
+								ev.data.fd = active_sock;
+								if (epoll_ctl(epollfd, EPOLL_CTL_ADD, active_sock, &ev) == 0) {
+									pool_sockets_in_epoll[conn_pool->current_index] = true;
+								}
+							}
+						} else {
+							ret = send(remote_fd, buf, recv_len2, 0);
+						}
 						if (ret < 0) {
 							printf("send return %d at @1", ret);
 							exit(1);
 						}
 						printf("send return %d @1\n", ret);
-					} else if (events[n].data.fd == remote_fd) {
-						ssize_t recv_len2 = recv(remote_fd, buf, buf_len, 0);
+					} else {
+						// Received data from remote (could be from pool or single connection)
+						int recv_fd = events[n].data.fd;
+						ssize_t recv_len2 = recv(recv_fd, buf, buf_len, 0);
 						if (recv_len2 < 0) {
 							printf("recv return -1 @2");
-							exit(1);
+							// Don't exit, just continue if using pool
+							if (!enable_pool) {
+								exit(1);
+							}
+							continue;
 						}
 						if (keyb[0]) {
 							// First remove STUN-like padding (which is NOT encrypted)
@@ -681,6 +985,20 @@ int main(int argc, char *argv[]) {
 							// Then decrypt the actual data
 							decrypt(buf, recv_len2, keyb);
 						}
+						
+						// Remove session header if pooling is enabled
+						if (enable_pool && conn_pool) {
+							uint32_t recv_session_id = 0;
+							uint32_t recv_msg_counter = 0;
+							int new_len = remove_session_header(buf, recv_len2, &recv_session_id, &recv_msg_counter);
+							if (new_len < 0) {
+								printf("Error: invalid session header @2\n");
+								continue;
+							}
+							recv_len2 = new_len;
+							printf("Received reply: session ID %u, msg counter %u\n", recv_session_id, recv_msg_counter);
+						}
+						
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@2\n", recv_len2);
 						if (keya[0]) {
@@ -699,6 +1017,11 @@ int main(int argc, char *argv[]) {
 						printf("send return %d @2\n", ret);
 					}
 				}
+			}
+			
+			// Cleanup
+			if (enable_pool && conn_pool) {
+				delete conn_pool;
 			}
 			exit(0);
 		} else {

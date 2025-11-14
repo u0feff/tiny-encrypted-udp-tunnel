@@ -22,7 +22,7 @@ linux x64 and mips_ar71xx binaries have already been built.
 # usage
 this program is essentially a port forwarder which allows you to use a key for encryption/decryption at either side.if you use a pair of them,one at local host,the other at remote host,they form a tunnel together.
 
-forward -l [adressA:]portA -r [adressB:]portB  [-a passwdA] [-b passwdB]
+forward -l [adressA:]portA -r [adressB:]portB  [-a passwdA] [-b passwdB] [-c] [-p pool_size] [-m rotation_messages]
 
 after being started,this program will forward all packet received from adressA:portA to adressB:portB. and all packet received back from adressB:portB will be forward back to adressA:portA. it can handle multiple udp connection.
 
@@ -43,6 +43,12 @@ if -b is used ,all packet goes into adressB:portB will be decrypted by passwdB,a
 
 -c (optional): use ChaCha20 encryption instead of XOR. Provides stronger cryptographic security. Both sides must use the same encryption method.
 
+connection pooling option (anti-blocking feature):
+
+-p (optional): enable connection pooling with specified pool size (default: 3, range: 1-10). This creates multiple UDP connections that rotate to avoid provider blocking after prolonged sessions.
+
+-m (optional): rotate to next connection in pool after this many messages (default: 5, set to 0 to disable rotation). When a connection exceeds this limit, it will be closed and a new one created on a different local port.
+
 
 
 
@@ -58,10 +64,25 @@ run this at client side:
 
 ## Example 2: Using ChaCha20 encryption (recommended)
 run this at sever side at 44.55.66.77:
-./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
+./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c -p 3 > /dev/null &
 
 run this at client side:
-./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c >/dev/null&
+./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c -p 3 >/dev/null&
+
+## Example 3: Using connection pooling to avoid blocking
+If your provider blocks long sessions after several messages, use connection pooling:
+
+Client side (with connection pool):
+./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c -p 3 -m 5 >/dev/null&
+
+Server side (with session tracking):
+./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c -p 3 > /dev/null &
+
+This creates a pool of 3 connections that rotate after every 5 messages. Each rotation:
+- Closes the current connection
+- Opens a new connection on a different local port
+- Maintains session continuity via session ID headers
+- Falls back to next connection if one fails
 
 now,configure you openvpn client to connect to 127.0.0.1:9002
 
@@ -122,3 +143,43 @@ Each encrypted packet is wrapped with a 20-byte STUN header containing:
 The STUN header remains unencrypted so that Deep Packet Inspection (DPI) systems will see what appears to be legitimate STUN/WebRTC traffic, while the actual data payload is encrypted underneath.
 
 This feature is automatic when using encryption - no additional flags needed.
+
+# connection pooling
+
+## Overview
+Some Internet providers block or throttle long-lasting UDP sessions, often after a certain number of packets or time period. Connection pooling helps bypass this limitation by rotating through multiple connections.
+
+## How It Works
+When connection pooling is enabled with the `-p` flag:
+
+1. **Client Side**: Creates a pool of N connections (default 3) and rotates through them
+   - Each connection uses a different local port
+   - After M messages (default 5, configurable with `-m`), the connection rotates to the next in the pool
+   - The old connection is closed and a new one is created on a different local port
+   - If a connection fails, it automatically falls back to the next connection in the pool
+   - Session ID headers are added to maintain session continuity
+
+2. **Server Side**: Tracks sessions by session ID
+   - Receives packets with session ID headers
+   - Routes packets to the correct backend connection based on session ID
+   - Maintains session state across connection rotations
+   - Cleans up stale sessions automatically
+
+## Session ID Header
+When pooling is enabled, an 8-byte header is added to each packet:
+- 4 bytes: Session ID (unique identifier for this client session)
+- 4 bytes: Message counter (increments with each message)
+
+This header is added **before** encryption and **after** decryption, allowing the server to route packets correctly even when connections rotate.
+
+## Benefits
+- **Avoids blocking**: By rotating connections, prevents provider detection of long sessions
+- **Resilience**: Automatically recovers from connection failures
+- **Session continuity**: Maintains session state across connection changes
+- **Configurable**: Adjust pool size and rotation frequency based on your needs
+
+## Usage Notes
+- Both client and server should use the same pool settings for optimal performance
+- Adjust rotation messages (`-m`) based on when your provider typically blocks
+- Pool size (`-p`) should be small (3-5) to minimize resource usage
+- Works with both XOR and ChaCha20 encryption
