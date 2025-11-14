@@ -445,7 +445,6 @@ int main(int argc, char *argv[]) {
 							int padded_len = add_padding(buf, recv_len2, buf2, buf_len);
 							memcpy(buf, buf2, padded_len);
 							recv_len2 = padded_len;
-							encrypt(buf, recv_len2, keyb);
 						}
 						ret = send(remote_fd, buf, recv_len2, 0);
 						if (ret < 0) {
