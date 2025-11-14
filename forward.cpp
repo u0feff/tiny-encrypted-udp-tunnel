@@ -217,70 +217,127 @@ void decrypt(char * input, int len, char *key) {
 	}
 }
 
-// Add random padding to the beginning of data
-// Returns new length after adding padding
-// Format: [1 byte: padding_len][padding_len bytes: random data][original data]
+// Add padding that looks like WebRTC STUN header
+// Returns new length after adding STUN-like header
+// Format: [20-byte STUN header][padding bytes][original data]
+// STUN Header:
+//   - Bytes 0-1: Message Type (0x0001 for Binding Request)
+//   - Bytes 2-3: Message Length (total length - 20)
+//   - Bytes 4-7: Magic Cookie (0x2112A442)
+//   - Bytes 8-19: Transaction ID (12 random bytes)
 int add_padding(char *data, int data_len, char *output, int max_output_len) {
-	// Read random byte for padding length (0-255)
+	// STUN header is 20 bytes minimum
+	const int STUN_HEADER_SIZE = 20;
+	
+	// Generate random padding length (0-255 bytes after STUN header)
 	unsigned char padding_len;
 	int fd = open("/dev/urandom", O_RDONLY);
 	if (fd < 0) {
-		// If urandom fails, use a simpler random
 		padding_len = rand() % 256;
 	} else {
 		read(fd, &padding_len, 1);
 		close(fd);
 	}
 	
-	// Check if we have enough space
-	int total_len = 1 + padding_len + data_len;
+	// Total length: STUN header + padding + data
+	int total_len = STUN_HEADER_SIZE + padding_len + data_len;
 	if (total_len > max_output_len) {
 		// Reduce padding to fit
-		padding_len = max_output_len - 1 - data_len;
+		padding_len = max_output_len - STUN_HEADER_SIZE - data_len;
 		if (padding_len < 0) padding_len = 0;
-		total_len = 1 + padding_len + data_len;
+		total_len = STUN_HEADER_SIZE + padding_len + data_len;
 	}
 	
-	// Write padding length as first byte
-	output[0] = padding_len;
+	// Build STUN header
+	unsigned char *header = (unsigned char*)output;
 	
-	// Write random padding
+	// Bytes 0-1: Message Type (0x0001 = Binding Request)
+	header[0] = 0x00;
+	header[1] = 0x01;
+	
+	// Bytes 2-3: Message Length (big-endian, length after header)
+	uint16_t msg_len = padding_len + data_len;
+	header[2] = (msg_len >> 8) & 0xFF;
+	header[3] = msg_len & 0xFF;
+	
+	// Bytes 4-7: Magic Cookie (0x2112A442)
+	header[4] = 0x21;
+	header[5] = 0x12;
+	header[6] = 0xA4;
+	header[7] = 0x42;
+	
+	// Bytes 8-19: Transaction ID (12 random bytes, but encode padding_len in first byte)
+	header[8] = padding_len; // Store padding length here
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		for (int i = 9; i < 20; i++) {
+			header[i] = rand() % 256;
+		}
+	} else {
+		read(fd, header + 9, 11);
+		close(fd);
+	}
+	
+	// Add random padding bytes after STUN header
 	if (padding_len > 0) {
 		fd = open("/dev/urandom", O_RDONLY);
 		if (fd < 0) {
-			// Fallback to rand()
 			for (int i = 0; i < padding_len; i++) {
-				output[1 + i] = rand() % 256;
+				output[STUN_HEADER_SIZE + i] = rand() % 256;
 			}
 		} else {
-			read(fd, output + 1, padding_len);
+			read(fd, output + STUN_HEADER_SIZE, padding_len);
 			close(fd);
 		}
 	}
 	
-	// Copy original data after padding
-	memcpy(output + 1 + padding_len, data, data_len);
+	// Copy original data after STUN header and padding
+	memcpy(output + STUN_HEADER_SIZE + padding_len, data, data_len);
 	
 	return total_len;
 }
 
-// Remove padding from the beginning of data
+// Remove padding that looks like WebRTC STUN header
 // Returns new length after removing padding, or -1 on error
 int remove_padding(char *data, int data_len) {
-	if (data_len < 1) {
-		return -1; // Invalid: need at least 1 byte for padding length
+	const int STUN_HEADER_SIZE = 20;
+	
+	if (data_len < STUN_HEADER_SIZE) {
+		return -1; // Invalid: need at least STUN header
 	}
 	
-	unsigned char padding_len = (unsigned char)data[0];
+	unsigned char *header = (unsigned char*)data;
+	
+	// Verify STUN header structure
+	// Check Message Type (should be 0x0001 for Binding Request)
+	if (header[0] != 0x00 || header[1] != 0x01) {
+		return -1; // Invalid STUN message type
+	}
+	
+	// Check Magic Cookie (should be 0x2112A442)
+	if (header[4] != 0x21 || header[5] != 0x12 || 
+	    header[6] != 0xA4 || header[7] != 0x42) {
+		return -1; // Invalid magic cookie
+	}
+	
+	// Extract padding length from first byte of Transaction ID
+	unsigned char padding_len = header[8];
+	
+	// Verify message length matches
+	uint16_t msg_len = (header[2] << 8) | header[3];
+	int expected_data_len = data_len - STUN_HEADER_SIZE;
+	if (msg_len != expected_data_len) {
+		return -1; // Message length mismatch
+	}
 	
 	// Check if padding length is valid
-	if (1 + padding_len > data_len) {
+	if (STUN_HEADER_SIZE + padding_len > data_len) {
 		return -1; // Invalid: padding extends beyond data
 	}
 	
 	// Move actual data to beginning of buffer
-	int actual_data_len = data_len - 1 - padding_len;
-	memmove(data, data + 1 + padding_len, actual_data_len);
+	int actual_data_len = data_len - STUN_HEADER_SIZE - padding_len;
+	memmove(data, data + STUN_HEADER_SIZE + padding_len, actual_data_len);
 	
 	return actual_data_len;
 }
@@ -472,13 +529,15 @@ int main(int argc, char *argv[]) {
 		printf("Received packet from %s:%d\n", addrstr, port);
 
 		if (keya[0]) {
-			decrypt(buf, recv_len, keya);
+			// First remove STUN-like padding (which is NOT encrypted)
 			int new_len = remove_padding(buf, recv_len);
 			if (new_len < 0) {
 				printf("Error: invalid padding\n");
 				continue;
 			}
 			recv_len = new_len;
+			// Then decrypt the actual data
+			decrypt(buf, recv_len, keya);
 		}
 		buf[recv_len] = 0;
 		printf("recv_len: %d\n", (int)recv_len);
@@ -529,10 +588,12 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (keyb[0]) {
+				// First encrypt the data
+				encrypt(buf, recv_len, keyb);
+				// Then add STUN-like padding (which remains unencrypted)
 				int padded_len = add_padding(buf, recv_len, temp_buf, buf_len);
 				memcpy(buf, temp_buf, padded_len);
 				recv_len = padded_len;
-				encrypt(buf, recv_len, keyb);
 			}
 			ret = send(remote_fd, buf, recv_len, 0);
 			printf("send return %d\n", ret);
@@ -577,21 +638,25 @@ int main(int argc, char *argv[]) {
 							exit(1);
 						}
 						if (keya[0]) {
-							decrypt(buf, recv_len2, keya);
+							// First remove STUN-like padding (which is NOT encrypted)
 							int new_len = remove_padding(buf, recv_len2);
 							if (new_len < 0) {
 								printf("Error: invalid padding @1\n");
 								continue;
 							}
 							recv_len2 = new_len;
+							// Then decrypt the actual data
+							decrypt(buf, recv_len2, keya);
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@1\n", recv_len2);
 						if (keyb[0]) {
+							// First encrypt the data
+							encrypt(buf, recv_len2, keyb);
+							// Then add STUN-like padding (which remains unencrypted)
 							int padded_len = add_padding(buf, recv_len2, temp_buf, buf_len);
 							memcpy(buf, temp_buf, padded_len);
 							recv_len2 = padded_len;
-							encrypt(buf, recv_len2, keyb);
 						}
 						ret = send(remote_fd, buf, recv_len2, 0);
 						if (ret < 0) {
@@ -606,21 +671,25 @@ int main(int argc, char *argv[]) {
 							exit(1);
 						}
 						if (keyb[0]) {
-							decrypt(buf, recv_len2, keyb);
+							// First remove STUN-like padding (which is NOT encrypted)
 							int new_len = remove_padding(buf, recv_len2);
 							if (new_len < 0) {
 								printf("Error: invalid padding @2\n");
 								continue;
 							}
 							recv_len2 = new_len;
+							// Then decrypt the actual data
+							decrypt(buf, recv_len2, keyb);
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@2\n", recv_len2);
 						if (keya[0]) {
+							// First encrypt the data
+							encrypt(buf, recv_len2, keya);
+							// Then add STUN-like padding (which remains unencrypted)
 							int padded_len = add_padding(buf, recv_len2, temp_buf, buf_len);
 							memcpy(buf, temp_buf, padded_len);
 							recv_len2 = padded_len;
-							encrypt(buf, recv_len2, keya);
 						}
 						ret = send(local_fd, buf, recv_len2, 0);
 						if (ret < 0) {
