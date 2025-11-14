@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@ map<string, string> mp;
 
 char local_address[100], remote_address[100];
 int local_port = -1, remote_port = -1;
+int port_range_min = -1, port_range_max = -1; // Port hopping range
 char keya[100], keyb[100];
 char iv[100];
 const int buf_len = 20480;
@@ -380,6 +382,32 @@ int resolve_addr(const char* addr, int port, struct sockaddr_storage* ss, sockle
 	return 0;
 }
 
+// Get next port in rotation (for port hopping)
+// Returns the port to use for the next message
+// Uses a simple hash of current time to select port to avoid cross-process synchronization issues
+int get_next_port() {
+	if (port_range_min == -1 || port_range_max == -1) {
+		// Port hopping not enabled, use the original remote_port
+		return remote_port;
+	}
+	
+	// Calculate the next port in the range using time-based selection
+	// This avoids the need for shared state between forked processes
+	static unsigned int call_count = 0;
+	int range_size = port_range_max - port_range_min + 1;
+	
+	// Mix current time with call count for better distribution
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	unsigned int seed = (ts.tv_sec * 1000000000ULL + ts.tv_nsec) + call_count;
+	call_count++;
+	
+	// Select port based on seed
+	int port = port_range_min + (seed % range_size);
+	
+	return port;
+}
+
 int parse_addr_port(const char* input, char* address, size_t address_size, int* port) {
     *port = -1;
     if (!input || !address || address_size == 0) return -1;
@@ -431,12 +459,13 @@ int main(int argc, char *argv[]) {
 	memset(iv, 0, sizeof(iv));
 	strcpy(iv, "1234567890abcdef");
 	if (argc == 1) {
-		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd] [-c]\n");
+		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd] [-c] [-p min_port:max_port]\n");
 		printf("  -c: use ChaCha20 encryption (default: XOR)\n");
+		printf("  -p: enable port hopping with specified port range (e.g., -p 9000:9100)\n");
 		return -1;
 	}
 	int no_l = 1, no_r = 1;
-	while ((opt = getopt(argc, argv, "l:r:a:b:ch")) != -1) {
+	while ((opt = getopt(argc, argv, "l:r:a:b:p:ch")) != -1) {
 		switch (opt) {
 		case 'l':
 			no_l = 0;
@@ -465,6 +494,20 @@ int main(int argc, char *argv[]) {
 		case 'c':
 			use_chacha20 = 1;
 			printf("Using ChaCha20 encryption\n");
+			break;
+		case 'p':
+			// Parse port range (e.g., "9000:9100")
+			if (sscanf(optarg, "%d:%d", &port_range_min, &port_range_max) == 2) {
+				if (port_range_min > 0 && port_range_max > 0 && port_range_min <= port_range_max) {
+					fprintf(stderr, "Port hopping enabled: %d-%d\n", port_range_min, port_range_max);
+				} else {
+					fprintf(stderr, "Invalid port range: %s\n", optarg);
+					exit(-1);
+				}
+			} else {
+				fprintf(stderr, "Invalid port range format. Use: -p min_port:max_port\n");
+				exit(-1);
+			}
 			break;
 		case 'h':
 			break;
@@ -572,7 +615,11 @@ int main(int argc, char *argv[]) {
 			struct sockaddr_storage remote_other;
 			socklen_t remote_other_len;
 			int remote_family = AF_UNSPEC;
-			if (resolve_addr(remote_address, remote_port, &remote_other, &remote_other_len, &remote_family) != 0) {
+			
+			// Get the port to use (either fixed or first in rotation)
+			int target_port = get_next_port();
+			
+			if (resolve_addr(remote_address, target_port, &remote_other, &remote_other_len, &remote_family) != 0) {
 				fprintf(stderr, "Failed to resolve remote address\n");
 				exit(1);
 			}
@@ -581,10 +628,15 @@ int main(int argc, char *argv[]) {
 				perror("socket");
 				exit(1);
 			}
-			ret = connect(remote_fd, (struct sockaddr *) &remote_other, remote_other_len);
-			if (ret != 0) {
-				printf("connect return %d @2\n", ret);
-				exit(1);
+			
+			// Only use connect() if port hopping is disabled
+			// With port hopping, we'll use sendto() with varying ports
+			if (port_range_min == -1) {
+				ret = connect(remote_fd, (struct sockaddr *) &remote_other, remote_other_len);
+				if (ret != 0) {
+					printf("connect return %d @2\n", ret);
+					exit(1);
+				}
 			}
 
 			if (keyb[0]) {
@@ -595,7 +647,13 @@ int main(int argc, char *argv[]) {
 				memcpy(buf, temp_buf, padded_len);
 				recv_len = padded_len;
 			}
-			ret = send(remote_fd, buf, recv_len, 0);
+			
+			// Send to remote - use sendto() if port hopping, otherwise use send()
+			if (port_range_min != -1) {
+				ret = sendto(remote_fd, buf, recv_len, 0, (struct sockaddr *)&remote_other, remote_other_len);
+			} else {
+				ret = send(remote_fd, buf, recv_len, 0);
+			}
 			printf("send return %d\n", ret);
 			if (ret < 0)
 				exit(-1);
@@ -658,7 +716,19 @@ int main(int argc, char *argv[]) {
 							memcpy(buf, temp_buf, padded_len);
 							recv_len2 = padded_len;
 						}
-						ret = send(remote_fd, buf, recv_len2, 0);
+						
+						// Use port hopping if enabled
+						if (port_range_min != -1) {
+							// Get next port and update remote address
+							int next_port = get_next_port();
+							if (resolve_addr(remote_address, next_port, &remote_other, &remote_other_len, &remote_family) != 0) {
+								fprintf(stderr, "Failed to resolve remote address\n");
+								exit(1);
+							}
+							ret = sendto(remote_fd, buf, recv_len2, 0, (struct sockaddr *)&remote_other, remote_other_len);
+						} else {
+							ret = send(remote_fd, buf, recv_len2, 0);
+						}
 						if (ret < 0) {
 							printf("send return %d at @1", ret);
 							exit(1);

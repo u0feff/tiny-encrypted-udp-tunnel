@@ -22,7 +22,7 @@ linux x64 and mips_ar71xx binaries have already been built.
 # usage
 this program is essentially a port forwarder which allows you to use a key for encryption/decryption at either side.if you use a pair of them,one at local host,the other at remote host,they form a tunnel together.
 
-forward -l [adressA:]portA -r [adressB:]portB  [-a passwdA] [-b passwdB]
+forward -l [adressA:]portA -r [adressB:]portB  [-a passwdA] [-b passwdB] [-c] [-p min_port:max_port]
 
 after being started,this program will forward all packet received from adressA:portA to adressB:portB. and all packet received back from adressB:portB will be forward back to adressA:portA. it can handle multiple udp connection.
 
@@ -44,6 +44,13 @@ if -b is used ,all packet goes into adressB:portB will be decrypted by passwdB,a
 -c (optional): use ChaCha20 encryption instead of XOR. Provides stronger cryptographic security. Both sides must use the same encryption method.
 
 
+port hopping option:
+
+-p (optional): enables port hopping for additional obfuscation. Specify a port range (e.g., -p 9000:9100). When enabled, the client will send each message to a randomly selected port within the specified range. This helps evade port-based firewall detection and blocking. 
+
+**Note**: Port hopping is a client-side feature. The server side must listen on all ports in the specified range (e.g., using multiple server instances or configuring the firewall to forward the port range to a single port).
+
+
 
 
 # example
@@ -62,6 +69,21 @@ run this at sever side at 44.55.66.77:
 
 run this at client side:
 ./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c >/dev/null&
+
+## Example 3: Using ChaCha20 encryption with port hopping (maximum obfuscation)
+Server side setup at 44.55.66.77 - you need to listen on multiple ports (9001-9100):
+You can either:
+1. Use iptables to redirect the port range to a single port:
+   ```
+   iptables -t nat -A PREROUTING -p udp --dport 9001:9100 -j REDIRECT --to-port 9001
+   ./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
+   ```
+2. Or open the port range in your firewall and use a single listener (packets from different ports will be handled)
+
+Client side:
+./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c -p 9001:9100 >/dev/null&
+
+This setup combines ChaCha20 encryption, STUN-like padding, and port hopping for maximum obfuscation. Each message from the client will be sent to a randomly selected port between 9001 and 9100.
 
 now,configure you openvpn client to connect to 127.0.0.1:9002
 
