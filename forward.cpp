@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <netdb.h>
 #include <ctype.h>
+#include <time.h>
 #include <map>
 #include <string>
 #include <vector>
