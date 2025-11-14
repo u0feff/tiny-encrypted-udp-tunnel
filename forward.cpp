@@ -16,6 +16,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <time.h>
 
 using namespace std;
 
@@ -26,6 +27,7 @@ int local_port = -1, remote_port = -1;
 char keya[100], keyb[100];
 char iv[100];
 const int buf_len = 20480;
+int urandom_fd = -1;
 
 void handler(int num) {
 	int status;
@@ -35,6 +37,85 @@ void handler(int num) {
 			//printf("The child exit with code %d",WEXITSTATUS(status));
 		}
 	}
+}
+
+// Initialize random source
+void init_random() {
+	urandom_fd = open("/dev/urandom", O_RDONLY);
+	if (urandom_fd < 0) {
+		// Fallback to srand if /dev/urandom is not available
+		srand(time(NULL) ^ getpid());
+	}
+}
+
+// Get random byte
+unsigned char get_random_byte() {
+	unsigned char byte;
+	if (urandom_fd >= 0) {
+		if (read(urandom_fd, &byte, 1) != 1) {
+			// Fallback to rand()
+			byte = rand() & 0xFF;
+		}
+	} else {
+		byte = rand() & 0xFF;
+	}
+	return byte;
+}
+
+// Add random padding to the message
+// Format: [padding_length:1byte][actual_data][random_padding]
+// padding_length is encrypted along with the data for obfuscation
+int add_padding(char *input, int len, char *output, int max_len) {
+	if (len >= max_len - 1) {
+		// Not enough space for padding, just copy data
+		memcpy(output, input, len);
+		return len;
+	}
+	
+	// Random padding length (0-255 bytes)
+	unsigned char padding_len = get_random_byte();
+	
+	// Make sure we don't exceed buffer
+	int available = max_len - len - 1;
+	if (padding_len > available) {
+		padding_len = available;
+	}
+	
+	// Format: [padding_len][data][random padding]
+	output[0] = padding_len;
+	memcpy(output + 1, input, len);
+	
+	// Add random padding bytes
+	for (int i = 0; i < padding_len; i++) {
+		output[1 + len + i] = get_random_byte();
+	}
+	
+	return 1 + len + padding_len;
+}
+
+// Remove padding from the message
+// Returns the actual data length (without padding header and padding)
+int remove_padding(char *input, int len, char *output, int max_len) {
+	if (len < 1) {
+		return -1;
+	}
+	
+	unsigned char padding_len = (unsigned char)input[0];
+	int data_len = len - 1 - padding_len;
+	
+	// Sanity check
+	if (data_len < 0 || data_len > max_len) {
+		// Invalid padding, might be corrupted or old format
+		// Return original data without the first byte
+		if (len - 1 > max_len) {
+			return -1;
+		}
+		memcpy(output, input + 1, len - 1);
+		return len - 1;
+	}
+	
+	memcpy(output, input + 1, data_len);
+	return data_len;
 }
 
 void encrypt(char * input, int len, char *key) {
@@ -134,6 +215,7 @@ int main(int argc, char *argv[]) {
 	int i, j, k;
 	int opt;
 	signal(SIGCHLD, handler);
+	init_random();
 
 	printf("argc=%d ", argc);
 	for (i = 0; i < argc; i++)
@@ -208,6 +290,7 @@ int main(int argc, char *argv[]) {
 	setsockopt(local_listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
 	char buf[buf_len];
+	char buf2[buf_len]; // Buffer for data after padding removal
 	socklen_t slen = slen_me;
 	if (bind(local_listen_fd, (struct sockaddr*) &local_me, slen_me) == -1) {
 		printf("socket bind error");
@@ -238,6 +321,14 @@ int main(int argc, char *argv[]) {
 
 		if (keya[0]) {
 			decrypt(buf, recv_len, keya);
+			// Remove padding after decryption
+			int actual_len = remove_padding(buf, recv_len, buf2, buf_len);
+			if (actual_len < 0) {
+				printf("Error removing padding\n");
+				continue;
+			}
+			memcpy(buf, buf2, actual_len);
+			recv_len = actual_len;
 		}
 		buf[recv_len] = 0;
 		printf("recv_len: %d\n", (int)recv_len);
@@ -286,6 +377,10 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (keyb[0]) {
+				// Add padding before encryption
+				int padded_len = add_padding(buf, recv_len, buf2, buf_len);
+				memcpy(buf, buf2, padded_len);
+				recv_len = padded_len;
 				encrypt(buf, recv_len, keyb);
 			}
 			ret = send(remote_fd, buf, recv_len, 0);
@@ -332,10 +427,22 @@ int main(int argc, char *argv[]) {
 						}
 						if (keya[0]) {
 							decrypt(buf, recv_len2, keya);
+							// Remove padding after decryption
+							int actual_len = remove_padding(buf, recv_len2, buf2, buf_len);
+							if (actual_len < 0) {
+								printf("Error removing padding @1\n");
+								continue;
+							}
+							memcpy(buf, buf2, actual_len);
+							recv_len2 = actual_len;
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@1\n", recv_len2);
 						if (keyb[0]) {
+							// Add padding before encryption
+							int padded_len = add_padding(buf, recv_len2, buf2, buf_len);
+							memcpy(buf, buf2, padded_len);
+							recv_len2 = padded_len;
 							encrypt(buf, recv_len2, keyb);
 						}
 						ret = send(remote_fd, buf, recv_len2, 0);
@@ -352,10 +459,22 @@ int main(int argc, char *argv[]) {
 						}
 						if (keyb[0]) {
 							decrypt(buf, recv_len2, keyb);
+							// Remove padding after decryption
+							int actual_len = remove_padding(buf, recv_len2, buf2, buf_len);
+							if (actual_len < 0) {
+								printf("Error removing padding @2\n");
+								continue;
+							}
+							memcpy(buf, buf2, actual_len);
+							recv_len2 = actual_len;
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@2\n", recv_len2);
 						if (keya[0]) {
+							// Add padding before encryption
+							int padded_len = add_padding(buf, recv_len2, buf2, buf_len);
+							memcpy(buf, buf2, padded_len);
+							recv_len2 = padded_len;
 							encrypt(buf, recv_len2, keya);
 						}
 						ret = send(local_fd, buf, recv_len2, 0);
