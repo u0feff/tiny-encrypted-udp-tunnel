@@ -552,8 +552,14 @@ int main(int argc, char *argv[]) {
 			exit(1);
 		}
 		setsockopt(local_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-		// bind to the same local address/port as the listening socket
+		// Use random source port (port 0) instead of the listening port
 		memcpy(&reply_me, &local_me, sizeof(local_me)); 
+		// Set port to 0 to let OS assign random ephemeral port
+		if (addr_family == AF_INET) {
+			((struct sockaddr_in *)&reply_me)->sin_port = 0;
+		} else if (addr_family == AF_INET6) {
+			((struct sockaddr_in6 *)&reply_me)->sin6_port = 0;
+		}
 		reply_me_len = slen_me;
 		if (bind(local_fd, (struct sockaddr*) &reply_me, reply_me_len) == -1) {
 			printf("socket bind error in child");
