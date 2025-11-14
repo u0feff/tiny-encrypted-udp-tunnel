@@ -81,3 +81,15 @@ currently this program only use XOR for encrypting.mainly bc i use a mips_ar71xx
 nevertheless,you can easily integrate your own encrytion algotirhm into this program if you need stronger encryption.all you need to do is to rewrite 'void encrypt(char * input,int len,char *key)' and 'void decrypt(char * input,int len,char *key)'.
 
 (a good way to implemnet AES encrytion might be using the lib in this repo https://github.com/kokke/tiny-AES128-C )
+
+# padding for obfuscation
+each encrypted message now includes random padding to make traffic analysis harder. the padding works as follows:
+
+- when encryption is enabled (via -a or -b), random padding (0-255 bytes) is automatically added to each message
+- padding format: [padding_length:1byte][actual_data][random_padding]
+- the entire packet including the padding length is encrypted, making it harder to detect patterns
+- random data for padding is sourced from /dev/urandom when available, with fallback to rand()
+- this makes encrypted messages vary in size even for identical payloads, improving obfuscation
+- when messages are received and decrypted, padding is automatically stripped before forwarding
+
+this feature is transparent and requires no configuration - it's automatically applied whenever encryption is enabled.
