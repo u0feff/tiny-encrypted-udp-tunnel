@@ -106,3 +106,19 @@ To use ChaCha20 encryption, add the `-c` flag when starting the forwarder:
 **Important**: Both sides of the tunnel must use the same encryption method. If one side uses `-c`, the other side must also use `-c`.
 
 nevertheless,you can easily integrate your own encrytion algotirhm into this program if you need different encryption.all you need to do is to rewrite 'void encrypt(char * input,int len,char *key)' and 'void decrypt(char * input,int len,char *key)'.
+
+# traffic obfuscation
+
+## STUN-like padding
+When encryption is enabled (using either `-a` or `-b` flag), the program automatically adds padding that makes the encrypted traffic look like WebRTC STUN (Session Traversal Utilities for NAT) packets. This helps the tunnel traffic blend in with legitimate WebRTC traffic, making it harder for firewalls to detect and block.
+
+**STUN Header Structure:**
+Each encrypted packet is wrapped with a 20-byte STUN header containing:
+- Message Type: 0x0001 (STUN Binding Request)
+- Message Length: Size of the encrypted payload
+- Magic Cookie: 0x2112A442 (standard STUN identifier)
+- Transaction ID: 12 random bytes (with padding metadata)
+
+The STUN header remains unencrypted so that Deep Packet Inspection (DPI) systems will see what appears to be legitimate STUN/WebRTC traffic, while the actual data payload is encrypted underneath.
+
+This feature is automatic when using encryption - no additional flags needed.
