@@ -29,6 +29,21 @@ char iv[100];
 const int buf_len = 20480;
 int use_chacha20 = 0; // 0 = XOR, 1 = ChaCha20
 
+// Session management for random source ports
+struct SessionInfo {
+	struct sockaddr_storage client_addr;
+	socklen_t client_addr_len;
+	uint32_t session_id;
+	time_t last_seen;
+};
+
+map<uint32_t, SessionInfo> sessions; // session_id -> client info
+uint32_t next_session_id = 1;
+
+// Socket pool for reusing random-port sockets
+vector<int> socket_pool;
+const int MAX_POOL_SIZE = 100;
+
 void handler(int num) {
 	int status;
 	int pid;
@@ -342,6 +357,170 @@ int remove_padding(char *data, int data_len) {
 	return actual_data_len;
 }
 
+// Add session ID to padding header for routing
+// Session ID is stored in bytes 9-12 of the STUN Transaction ID
+int add_padding_with_session(char *data, int data_len, char *output, int max_output_len, uint32_t session_id) {
+	// STUN header is 20 bytes minimum
+	const int STUN_HEADER_SIZE = 20;
+	
+	// Generate random padding length (0-255 bytes after STUN header)
+	unsigned char padding_len;
+	int fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		padding_len = rand() % 256;
+	} else {
+		read(fd, &padding_len, 1);
+		close(fd);
+	}
+	
+	// Total length: STUN header + padding + data
+	int total_len = STUN_HEADER_SIZE + padding_len + data_len;
+	if (total_len > max_output_len) {
+		// Reduce padding to fit
+		padding_len = max_output_len - STUN_HEADER_SIZE - data_len;
+		if (padding_len < 0) padding_len = 0;
+		total_len = STUN_HEADER_SIZE + padding_len + data_len;
+	}
+	
+	// Build STUN header
+	unsigned char *header = (unsigned char*)output;
+	
+	// Bytes 0-1: Message Type (0x0001 = Binding Request)
+	header[0] = 0x00;
+	header[1] = 0x01;
+	
+	// Bytes 2-3: Message Length (big-endian, length after header)
+	uint16_t msg_len = padding_len + data_len;
+	header[2] = (msg_len >> 8) & 0xFF;
+	header[3] = msg_len & 0xFF;
+	
+	// Bytes 4-7: Magic Cookie (0x2112A442)
+	header[4] = 0x21;
+	header[5] = 0x12;
+	header[6] = 0xA4;
+	header[7] = 0x42;
+	
+	// Bytes 8-19: Transaction ID
+	header[8] = padding_len; // Store padding length in byte 8
+	
+	// Bytes 9-12: Session ID (4 bytes, big-endian)
+	header[9] = (session_id >> 24) & 0xFF;
+	header[10] = (session_id >> 16) & 0xFF;
+	header[11] = (session_id >> 8) & 0xFF;
+	header[12] = session_id & 0xFF;
+	
+	// Bytes 13-19: Random bytes
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		for (int i = 13; i < 20; i++) {
+			header[i] = rand() % 256;
+		}
+	} else {
+		read(fd, header + 13, 7);
+		close(fd);
+	}
+	
+	// Add random padding bytes after STUN header
+	if (padding_len > 0) {
+		fd = open("/dev/urandom", O_RDONLY);
+		if (fd < 0) {
+			for (int i = 0; i < padding_len; i++) {
+				output[STUN_HEADER_SIZE + i] = rand() % 256;
+			}
+		} else {
+			read(fd, output + STUN_HEADER_SIZE, padding_len);
+			close(fd);
+		}
+	}
+	
+	// Copy original data after STUN header and padding
+	memcpy(output + STUN_HEADER_SIZE + padding_len, data, data_len);
+	
+	return total_len;
+}
+
+// Extract session ID from padding header
+// Returns session ID, or 0 if not present/invalid
+uint32_t extract_session_id(char *data, int data_len) {
+	const int STUN_HEADER_SIZE = 20;
+	
+	if (data_len < STUN_HEADER_SIZE) {
+		return 0;
+	}
+	
+	unsigned char *header = (unsigned char*)data;
+	
+	// Verify STUN header structure
+	if (header[0] != 0x00 || header[1] != 0x01) {
+		return 0;
+	}
+	
+	if (header[4] != 0x21 || header[5] != 0x12 || 
+	    header[6] != 0xA4 || header[7] != 0x42) {
+		return 0;
+	}
+	
+	// Extract session ID from bytes 9-12 (big-endian)
+	uint32_t session_id = ((uint32_t)header[9] << 24) |
+	                      ((uint32_t)header[10] << 16) |
+	                      ((uint32_t)header[11] << 8) |
+	                      ((uint32_t)header[12]);
+	
+	return session_id;
+}
+
+// Get or create a socket from the pool
+int get_socket_from_pool(int addr_family) {
+	if (!socket_pool.empty()) {
+		int sock = socket_pool.back();
+		socket_pool.pop_back();
+		return sock;
+	}
+	
+	int sock = socket(addr_family, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		return -1;
+	}
+	
+	// Bind to port 0 to get random ephemeral port
+	struct sockaddr_storage bind_addr;
+	memset(&bind_addr, 0, sizeof(bind_addr));
+	socklen_t addr_len;
+	
+	if (addr_family == AF_INET) {
+		struct sockaddr_in *addr4 = (struct sockaddr_in *)&bind_addr;
+		addr4->sin_family = AF_INET;
+		addr4->sin_addr.s_addr = INADDR_ANY;
+		addr4->sin_port = 0; // Random port
+		addr_len = sizeof(struct sockaddr_in);
+	} else if (addr_family == AF_INET6) {
+		struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&bind_addr;
+		addr6->sin6_family = AF_INET6;
+		addr6->sin6_addr = in6addr_any;
+		addr6->sin6_port = 0; // Random port
+		addr_len = sizeof(struct sockaddr_in6);
+	} else {
+		close(sock);
+		return -1;
+	}
+	
+	if (bind(sock, (struct sockaddr *)&bind_addr, addr_len) < 0) {
+		close(sock);
+		return -1;
+	}
+	
+	return sock;
+}
+
+// Return socket to pool for reuse
+void return_socket_to_pool(int sock) {
+	if (socket_pool.size() < MAX_POOL_SIZE) {
+		socket_pool.push_back(sock);
+	} else {
+		close(sock);
+	}
+}
+
 void setnonblocking(int sock) {
 	int opts;
 	opts = fcntl(sock, F_GETFL);
@@ -552,14 +731,8 @@ int main(int argc, char *argv[]) {
 			exit(1);
 		}
 		setsockopt(local_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-		// Use random source port (port 0) instead of the listening port
+		// bind to the same local address/port as the listening socket
 		memcpy(&reply_me, &local_me, sizeof(local_me)); 
-		// Set port to 0 to let OS assign random ephemeral port
-		if (addr_family == AF_INET) {
-			((struct sockaddr_in *)&reply_me)->sin_port = 0;
-		} else if (addr_family == AF_INET6) {
-			((struct sockaddr_in6 *)&reply_me)->sin6_port = 0;
-		}
 		reply_me_len = slen_me;
 		if (bind(local_fd, (struct sockaddr*) &reply_me, reply_me_len) == -1) {
 			printf("socket bind error in child");
@@ -594,15 +767,36 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (keyb[0]) {
+				// Allocate session ID for this connection if not exists
+				uint32_t session_id = next_session_id++;
+				
 				// First encrypt the data
 				encrypt(buf, recv_len, keyb);
-				// Then add STUN-like padding (which remains unencrypted)
-				int padded_len = add_padding(buf, recv_len, temp_buf, buf_len);
+				// Then add STUN-like padding with session ID (which remains unencrypted)
+				int padded_len = add_padding_with_session(buf, recv_len, temp_buf, buf_len, session_id);
 				memcpy(buf, temp_buf, padded_len);
 				recv_len = padded_len;
 			}
-			ret = send(remote_fd, buf, recv_len, 0);
+			
+			// Use random source port for sending to remote forwarder
+			int send_fd = remote_fd;
+			if (keyb[0]) {
+				// Get socket from pool with random port
+				send_fd = get_socket_from_pool(remote_family);
+				if (send_fd < 0) {
+					printf("Failed to get socket from pool\n");
+					send_fd = remote_fd; // Fallback to connected socket
+				}
+			}
+			
+			ret = sendto(send_fd, buf, recv_len, 0, (struct sockaddr *)&remote_other, remote_other_len);
 			printf("send return %d\n", ret);
+			
+			// Return socket to pool if we used one
+			if (keyb[0] && send_fd != remote_fd) {
+				return_socket_to_pool(send_fd);
+			}
+			
 			if (ret < 0)
 				exit(-1);
 
@@ -656,15 +850,35 @@ int main(int argc, char *argv[]) {
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@1\n", recv_len2);
+						
+						uint32_t session_id = 0;
 						if (keyb[0]) {
+							// Allocate new session ID for each message
+							session_id = next_session_id++;
 							// First encrypt the data
 							encrypt(buf, recv_len2, keyb);
-							// Then add STUN-like padding (which remains unencrypted)
-							int padded_len = add_padding(buf, recv_len2, temp_buf, buf_len);
+							// Then add STUN-like padding with session ID (which remains unencrypted)
+							int padded_len = add_padding_with_session(buf, recv_len2, temp_buf, buf_len, session_id);
 							memcpy(buf, temp_buf, padded_len);
 							recv_len2 = padded_len;
 						}
-						ret = send(remote_fd, buf, recv_len2, 0);
+						
+						// Use random source port for each send to remote forwarder
+						int send_fd = remote_fd;
+						if (keyb[0]) {
+							send_fd = get_socket_from_pool(remote_family);
+							if (send_fd < 0) {
+								send_fd = remote_fd; // Fallback
+							}
+						}
+						
+						ret = sendto(send_fd, buf, recv_len2, 0, (struct sockaddr *)&remote_other, remote_other_len);
+						
+						// Return socket to pool
+						if (keyb[0] && send_fd != remote_fd) {
+							return_socket_to_pool(send_fd);
+						}
+						
 						if (ret < 0) {
 							printf("send return %d at @1", ret);
 							exit(1);
