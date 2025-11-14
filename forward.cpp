@@ -55,6 +55,74 @@ void decrypt(char * input, int len, char *key) {
 	}
 }
 
+// Add random padding to the beginning of data
+// Returns new length after adding padding
+// Format: [1 byte: padding_len][padding_len bytes: random data][original data]
+int add_padding(char *data, int data_len, char *output, int max_output_len) {
+	// Read random byte for padding length (0-255)
+	unsigned char padding_len;
+	int fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		// If urandom fails, use a simpler random
+		padding_len = rand() % 256;
+	} else {
+		read(fd, &padding_len, 1);
+		close(fd);
+	}
+	
+	// Check if we have enough space
+	int total_len = 1 + padding_len + data_len;
+	if (total_len > max_output_len) {
+		// Reduce padding to fit
+		padding_len = max_output_len - 1 - data_len;
+		if (padding_len < 0) padding_len = 0;
+		total_len = 1 + padding_len + data_len;
+	}
+	
+	// Write padding length as first byte
+	output[0] = padding_len;
+	
+	// Write random padding
+	if (padding_len > 0) {
+		fd = open("/dev/urandom", O_RDONLY);
+		if (fd < 0) {
+			// Fallback to rand()
+			for (int i = 0; i < padding_len; i++) {
+				output[1 + i] = rand() % 256;
+			}
+		} else {
+			read(fd, output + 1, padding_len);
+			close(fd);
+		}
+	}
+	
+	// Copy original data after padding
+	memcpy(output + 1 + padding_len, data, data_len);
+	
+	return total_len;
+}
+
+// Remove padding from the beginning of data
+// Returns new length after removing padding, or -1 on error
+int remove_padding(char *data, int data_len) {
+	if (data_len < 1) {
+		return -1; // Invalid: need at least 1 byte for padding length
+	}
+	
+	unsigned char padding_len = (unsigned char)data[0];
+	
+	// Check if padding length is valid
+	if (1 + padding_len > data_len) {
+		return -1; // Invalid: padding extends beyond data
+	}
+	
+	// Move actual data to beginning of buffer
+	int actual_data_len = data_len - 1 - padding_len;
+	memmove(data, data + 1 + padding_len, actual_data_len);
+	
+	return actual_data_len;
+}
+
 void setnonblocking(int sock) {
 	int opts;
 	opts = fcntl(sock, F_GETFL);
@@ -238,6 +306,12 @@ int main(int argc, char *argv[]) {
 
 		if (keya[0]) {
 			decrypt(buf, recv_len, keya);
+			int new_len = remove_padding(buf, recv_len);
+			if (new_len < 0) {
+				printf("Error: invalid padding\n");
+				continue;
+			}
+			recv_len = new_len;
 		}
 		buf[recv_len] = 0;
 		printf("recv_len: %d\n", (int)recv_len);
@@ -267,6 +341,8 @@ int main(int argc, char *argv[]) {
 			}
 			close(local_listen_fd);
 
+			char temp_buf[buf_len]; // temporary buffer for padding operations
+
 			struct sockaddr_storage remote_other;
 			socklen_t remote_other_len;
 			int remote_family = AF_UNSPEC;
@@ -286,6 +362,9 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (keyb[0]) {
+				int padded_len = add_padding(buf, recv_len, temp_buf, buf_len);
+				memcpy(buf, temp_buf, padded_len);
+				recv_len = padded_len;
 				encrypt(buf, recv_len, keyb);
 			}
 			ret = send(remote_fd, buf, recv_len, 0);
@@ -332,10 +411,19 @@ int main(int argc, char *argv[]) {
 						}
 						if (keya[0]) {
 							decrypt(buf, recv_len2, keya);
+							int new_len = remove_padding(buf, recv_len2);
+							if (new_len < 0) {
+								printf("Error: invalid padding @1\n");
+								continue;
+							}
+							recv_len2 = new_len;
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@1\n", recv_len2);
 						if (keyb[0]) {
+							int padded_len = add_padding(buf, recv_len2, temp_buf, buf_len);
+							memcpy(buf, temp_buf, padded_len);
+							recv_len2 = padded_len;
 							encrypt(buf, recv_len2, keyb);
 						}
 						ret = send(remote_fd, buf, recv_len2, 0);
@@ -352,10 +440,19 @@ int main(int argc, char *argv[]) {
 						}
 						if (keyb[0]) {
 							decrypt(buf, recv_len2, keyb);
+							int new_len = remove_padding(buf, recv_len2);
+							if (new_len < 0) {
+								printf("Error: invalid padding @2\n");
+								continue;
+							}
+							recv_len2 = new_len;
 						}
 						buf[recv_len2] = 0;
 						printf("len %ld received from child@2\n", recv_len2);
 						if (keya[0]) {
+							int padded_len = add_padding(buf, recv_len2, temp_buf, buf_len);
+							memcpy(buf, temp_buf, padded_len);
+							recv_len2 = padded_len;
 							encrypt(buf, recv_len2, keya);
 						}
 						ret = send(local_fd, buf, recv_len2, 0);
