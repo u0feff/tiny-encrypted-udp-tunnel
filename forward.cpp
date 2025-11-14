@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@ int local_port = -1, remote_port = -1;
 char keya[100], keyb[100];
 char iv[100];
 const int buf_len = 20480;
+int use_chacha20 = 0; // 0 = XOR, 1 = ChaCha20
 
 void handler(int num) {
 	int status;
@@ -37,21 +39,181 @@ void handler(int num) {
 	}
 }
 
+// ChaCha20 implementation
+// ChaCha20 is a stream cipher designed by D. J. Bernstein
+// It's fast, secure, and doesn't use lookup tables (resistant to cache-timing attacks)
+
+#define ROTL32(v, n) (((v) << (n)) | ((v) >> (32 - (n))))
+#define U32TO8_LITTLE(p, v) \
+	do { \
+		(p)[0] = (unsigned char)((v)); \
+		(p)[1] = (unsigned char)((v) >> 8); \
+		(p)[2] = (unsigned char)((v) >> 16); \
+		(p)[3] = (unsigned char)((v) >> 24); \
+	} while (0)
+#define U8TO32_LITTLE(p) \
+	(((uint32_t)((p)[0])) | \
+	 ((uint32_t)((p)[1]) << 8) | \
+	 ((uint32_t)((p)[2]) << 16) | \
+	 ((uint32_t)((p)[3]) << 24))
+
+#define CHACHA20_QUARTERROUND(a, b, c, d) \
+	do { \
+		a += b; d ^= a; d = ROTL32(d, 16); \
+		c += d; b ^= c; b = ROTL32(b, 12); \
+		a += b; d ^= a; d = ROTL32(d, 8); \
+		c += d; b ^= c; b = ROTL32(b, 7); \
+	} while (0)
+
+typedef struct {
+	uint32_t state[16];
+	uint32_t counter;
+} chacha20_ctx;
+
+void chacha20_init(chacha20_ctx *ctx, const unsigned char *key, const unsigned char *nonce, uint32_t counter) {
+	// Constants "expand 32-byte k"
+	ctx->state[0] = 0x61707865;
+	ctx->state[1] = 0x3320646e;
+	ctx->state[2] = 0x79622d32;
+	ctx->state[3] = 0x6b206574;
+	
+	// Key (32 bytes = 8 words)
+	ctx->state[4] = U8TO32_LITTLE(key + 0);
+	ctx->state[5] = U8TO32_LITTLE(key + 4);
+	ctx->state[6] = U8TO32_LITTLE(key + 8);
+	ctx->state[7] = U8TO32_LITTLE(key + 12);
+	ctx->state[8] = U8TO32_LITTLE(key + 16);
+	ctx->state[9] = U8TO32_LITTLE(key + 20);
+	ctx->state[10] = U8TO32_LITTLE(key + 24);
+	ctx->state[11] = U8TO32_LITTLE(key + 28);
+	
+	// Counter
+	ctx->state[12] = counter;
+	
+	// Nonce (12 bytes = 3 words)
+	ctx->state[13] = U8TO32_LITTLE(nonce + 0);
+	ctx->state[14] = U8TO32_LITTLE(nonce + 4);
+	ctx->state[15] = U8TO32_LITTLE(nonce + 8);
+	
+	ctx->counter = counter;
+}
+
+void chacha20_block(chacha20_ctx *ctx, unsigned char *output) {
+	uint32_t x[16];
+	int i;
+	
+	// Copy state
+	for (i = 0; i < 16; i++) {
+		x[i] = ctx->state[i];
+	}
+	
+	// 20 rounds (10 double rounds)
+	for (i = 0; i < 10; i++) {
+		// Column rounds
+		CHACHA20_QUARTERROUND(x[0], x[4], x[8], x[12]);
+		CHACHA20_QUARTERROUND(x[1], x[5], x[9], x[13]);
+		CHACHA20_QUARTERROUND(x[2], x[6], x[10], x[14]);
+		CHACHA20_QUARTERROUND(x[3], x[7], x[11], x[15]);
+		// Diagonal rounds
+		CHACHA20_QUARTERROUND(x[0], x[5], x[10], x[15]);
+		CHACHA20_QUARTERROUND(x[1], x[6], x[11], x[12]);
+		CHACHA20_QUARTERROUND(x[2], x[7], x[8], x[13]);
+		CHACHA20_QUARTERROUND(x[3], x[4], x[9], x[14]);
+	}
+	
+	// Add state to x
+	for (i = 0; i < 16; i++) {
+		x[i] += ctx->state[i];
+	}
+	
+	// Convert to bytes
+	for (i = 0; i < 16; i++) {
+		U32TO8_LITTLE(output + (i * 4), x[i]);
+	}
+	
+	// Increment counter
+	ctx->state[12]++;
+}
+
+void chacha20_encrypt_decrypt(unsigned char *data, size_t len, const unsigned char *key, const unsigned char *nonce) {
+	chacha20_ctx ctx;
+	unsigned char keystream[64];
+	size_t i, j;
+	
+	chacha20_init(&ctx, key, nonce, 0);
+	
+	for (i = 0; i < len; i += 64) {
+		chacha20_block(&ctx, keystream);
+		
+		size_t block_len = (len - i > 64) ? 64 : (len - i);
+		for (j = 0; j < block_len; j++) {
+			data[i + j] ^= keystream[j];
+		}
+	}
+}
+
+// Derive a 32-byte key and 12-byte nonce from password
+void chacha20_derive_key_nonce(const char *password, unsigned char *key, unsigned char *nonce) {
+	// Simple key derivation: hash password multiple times
+	// For production, use a proper KDF like PBKDF2 or Argon2
+	size_t pass_len = strlen(password);
+	unsigned char temp[64];
+	memset(temp, 0, sizeof(temp));
+	
+	// Copy password and repeat to fill buffer
+	for (size_t i = 0; i < 64; i++) {
+		temp[i] = password[i % pass_len] ^ (i & 0xFF);
+	}
+	
+	// Simple mixing - XOR fold and rotate
+	for (int round = 0; round < 16; round++) {
+		for (size_t i = 0; i < 32; i++) {
+			temp[i] ^= temp[i + 32];
+			temp[i] = (temp[i] << 3) | (temp[i] >> 5);
+		}
+		for (size_t i = 0; i < 64; i++) {
+			temp[i] ^= password[i % pass_len];
+		}
+	}
+	
+	// First 32 bytes = key, next 12 bytes = nonce
+	memcpy(key, temp, 32);
+	memcpy(nonce, temp + 32, 12);
+}
+
 void encrypt(char * input, int len, char *key) {
-	int i, j;
-	for (i = 0, j = 0; i < len; i++, j++) {
-		if (key[j] == 0)
-			j = 0;
-		input[i] ^= key[j];
+	if (use_chacha20) {
+		// ChaCha20 encryption
+		unsigned char chacha_key[32];
+		unsigned char chacha_nonce[12];
+		chacha20_derive_key_nonce(key, chacha_key, chacha_nonce);
+		chacha20_encrypt_decrypt((unsigned char*)input, len, chacha_key, chacha_nonce);
+	} else {
+		// XOR encryption
+		int i, j;
+		for (i = 0, j = 0; i < len; i++, j++) {
+			if (key[j] == 0)
+				j = 0;
+			input[i] ^= key[j];
+		}
 	}
 }
 
 void decrypt(char * input, int len, char *key) {
-	int i, j;
-	for (i = 0, j = 0; i < len; i++, j++) {
-		if (key[j] == 0)
-			j = 0;
-		input[i] ^= key[j];
+	if (use_chacha20) {
+		// ChaCha20 decryption (same as encryption for stream ciphers)
+		unsigned char chacha_key[32];
+		unsigned char chacha_nonce[12];
+		chacha20_derive_key_nonce(key, chacha_key, chacha_nonce);
+		chacha20_encrypt_decrypt((unsigned char*)input, len, chacha_key, chacha_nonce);
+	} else {
+		// XOR decryption
+		int i, j;
+		for (i = 0, j = 0; i < len; i++, j++) {
+			if (key[j] == 0)
+				j = 0;
+			input[i] ^= key[j];
+		}
 	}
 }
 
@@ -212,11 +374,12 @@ int main(int argc, char *argv[]) {
 	memset(iv, 0, sizeof(iv));
 	strcpy(iv, "1234567890abcdef");
 	if (argc == 1) {
-		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd]\n");
+		printf("proc -l [adress:]port -r [adress:]port  [-a passwd] [-b passwd] [-c]\n");
+		printf("  -c: use ChaCha20 encryption (default: XOR)\n");
 		return -1;
 	}
 	int no_l = 1, no_r = 1;
-	while ((opt = getopt(argc, argv, "l:r:a:b:h")) != -1) {
+	while ((opt = getopt(argc, argv, "l:r:a:b:ch")) != -1) {
 		switch (opt) {
 		case 'l':
 			no_l = 0;
@@ -241,6 +404,10 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'b':
 			strcpy(keyb, optarg);
+			break;
+		case 'c':
+			use_chacha20 = 1;
+			printf("Using ChaCha20 encryption\n");
 			break;
 		case 'h':
 			break;

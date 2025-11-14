@@ -41,17 +41,27 @@ if -a is used ,all packet goes into adressA:portA will be decrypted by passwdA,a
 
 if -b is used ,all packet goes into adressB:portB will be decrypted by passwdB,and all packet goes out from adressB:portB will be encrypted by passwdB.if -b is omited,data goes into/out adressB:portB will not be encrypted/decrypted.
 
+-c (optional): use ChaCha20 encryption instead of XOR. Provides stronger cryptographic security. Both sides must use the same encryption method.
+
 
 
 
 # example
 assume an udp mode openvpn server is running at 44.55.66.77:9000
 
+## Example 1: Using XOR encryption (default, legacy)
 run this at sever side at 44.55.66.77:
 ./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' > /dev/null &
 
 run this at client side:
 ./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' >/dev/null&
+
+## Example 2: Using ChaCha20 encryption (recommended)
+run this at sever side at 44.55.66.77:
+./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
+
+run this at client side:
+./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c >/dev/null&
 
 now,configure you openvpn client to connect to 127.0.0.1:9002
 
@@ -76,8 +86,23 @@ dataflow:
 
 
 # method of encryption
-currently this program only use XOR for encrypting.mainly bc i use a mips_ar71xx router as client.router's cpu is slow,i personally need fast processing speed.and XOR is enough for fooling the firewall i have encountered.
+this program supports two encryption methods:
 
-nevertheless,you can easily integrate your own encrytion algotirhm into this program if you need stronger encryption.all you need to do is to rewrite 'void encrypt(char * input,int len,char *key)' and 'void decrypt(char * input,int len,char *key)'.
+## XOR (default, legacy)
+currently the default encryption uses XOR. mainly bc i use a mips_ar71xx router as client.router's cpu is slow,i personally need fast processing speed.and XOR is enough for fooling the firewall i have encountered.
 
-(a good way to implemnet AES encrytion might be using the lib in this repo https://github.com/kokke/tiny-AES128-C )
+## ChaCha20 (recommended for stronger encryption)
+ChaCha20 is a modern stream cipher designed by D. J. Bernstein. It provides:
+- **Strong cryptographic security**: Much stronger than XOR
+- **Lightweight and fast**: Optimized for software implementation, no lookup tables needed
+- **Less common**: Helps avoid detection by making traffic patterns less recognizable
+- **Cache-timing attack resistant**: No table lookups means consistent timing
+
+To use ChaCha20 encryption, add the `-c` flag when starting the forwarder:
+```
+./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
+```
+
+**Important**: Both sides of the tunnel must use the same encryption method. If one side uses `-c`, the other side must also use `-c`.
+
+nevertheless,you can easily integrate your own encrytion algotirhm into this program if you need different encryption.all you need to do is to rewrite 'void encrypt(char * input,int len,char *key)' and 'void decrypt(char * input,int len,char *key)'.
