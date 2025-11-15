@@ -17,7 +17,7 @@ Bidirectional lightweight tunnel for TCP and UDP forwarding with connection pool
 [Client App] --------data-------> [Client Tunnel] ---encrypted data---> [Server Tunnel] --------data-------> [Target Server]
 
              persistent * -> 8000                 pooled      8003 <- *                 persistent * -> 8002
-[Client App] <-------data-------- [Client Tunnel] ---encrypted data---> [Server Tunnel] <-------data-------- [Target Server]
+[Client App] <-------data-------- [Client Tunnel] <---encrypted data--- [Server Tunnel] <-------data-------- [Target Server]
 ```
 
 Idea is that connections between App/Server and Tunnel are persistent, so apps seeing it as usual connections, but connections between Tunnels are constantly being recreated. Connection pool is independent in both directions, so both hosts with Tunnels must have public IP address
