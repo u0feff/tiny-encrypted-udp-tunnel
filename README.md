@@ -1,124 +1,126 @@
-# tiny-encrypted-udp-tunnel
-tiny singlefile encrypted udp tunnel/forwarder
+# Tiny Encrypted UDP Tunnel with Connection Pooling
 
-# keywords
-encrypted,udp port forwarder,udp tunnel,openvpn being blocked,hide openvpn traffic
+A lightweight encrypted tunnel that supports both TCP and UDP forwarding with connection pooling to bypass provider restrictions on long-lived connections.
 
-# background 
-this program is originally designed for tunneling udp mode openvpn.(though it can be used for forwarding/tunneling any udp based protocol)
+## Features
 
-as we know,openvpn uses encryption for authentication and it encrypts the data it carrys.
+- **Connection Pooling**: Maintains a pool of connections to avoid provider blocks
+- **Automatic Rotation**: Rotates connections after a set number of messages or time interval
+- **Session Management**: Tracks sessions using unique IDs in packet headers
+- **Encryption**: AES-256-CBC encryption for all traffic
+- **TCP Optimization**: Disables Nagle's algorithm and enables keep-alive
+- **UDP Support**: Full UDP forwarding capability
+- **Failover**: Automatically uses next connection in pool if current fails
+- **Protocol Enum**: Uses strongly-typed Protocol enum instead of boolean flags
 
-however,it doesnt encrypt the handshake and control flow.in other words,it doenst aim at prevent itself from being detected by firewalls.
+## Architecture
 
-while openssh provided an easy-to-use tunnel feature,it doesnt support tunneling udp.ssh aslo doesnt prevent itself from being detected by firewalls.
-
-this program allow you to do encrypted tunneling so that firewalls wont be able to know the existence of a openvpn connection.
-
-has been stablely running for years on my server and router. 
-
-linux x64 and mips_ar71xx binaries have already been built.
-
-# usage
-this program is essentially a port forwarder which allows you to use a key for encryption/decryption at either side.if you use a pair of them,one at local host,the other at remote host,they form a tunnel together.
-
-forward -l [adressA:]portA -r [adressB:]portB  [-a passwdA] [-b passwdB]
-
-after being started,this program will forward all packet received from adressA:portA to adressB:portB. and all packet received back from adressB:portB will be forward back to adressA:portA. it can handle multiple udp connection.
-
-basic option:
-
--l -r option are required. -l indicates the local adress&port, -r indicates the remote adress&port.
-
-adressA and adressB are optional,if adressA or adressB are ommited,127.0.0.1 will be used by default.only ipv4 adress has been tested.
-
-
-encryption option:
-
--a and -b are optional.
-
-if -a is used ,all packet goes into adressA:portA will be decrypted by passwdA,and all packet goes out from adressA:portA will be encrypted by passwdA.if -a is omited,data goes into/out adressA:portA will not be encrypted/decrypted.
-
-if -b is used ,all packet goes into adressB:portB will be decrypted by passwdB,and all packet goes out from adressB:portB will be encrypted by passwdB.if -b is omited,data goes into/out adressB:portB will not be encrypted/decrypted.
-
--c (optional): use ChaCha20 encryption instead of XOR. Provides stronger cryptographic security. Both sides must use the same encryption method.
-
-
-
-
-# example
-assume an udp mode openvpn server is running at 44.55.66.77:9000
-
-## Example 1: Using XOR encryption (default, legacy)
-run this at sever side at 44.55.66.77:
-./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' > /dev/null &
-
-run this at client side:
-./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' >/dev/null&
-
-## Example 2: Using ChaCha20 encryption (recommended)
-run this at sever side at 44.55.66.77:
-./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
-
-run this at client side:
-./forward -l 127.0.0.1:9002 -r 44.55.66.77:9001 -b 'abcd' -c >/dev/null&
-
-now,configure you openvpn client to connect to 127.0.0.1:9002
-
-dataflow:
-
-
-                  client computer                                                           server computer (44.55.66.77)
-    +---------------------------------------------+                           +------------------------------------------------+
-    |   openvpn                                   |                           |                              openvpn server    |
-    |   client                      forwarder     |                           |    forwarder                    daemon         |
-    | +-----------+               +------------+  |                           |   +-----------+                +------------+  |
-    | |           |r              |            |r |                           |   |           |r               |            |  |
-    | |           |a             9|            |a |                           |  9|           |a              9|            |  |
-    | |           |n             0|            |n |                           |  0|           |n              0|            |  |
-    | |           |d <-------->  0|            |d<-----------------------------> 0|           |d  <-------->  0|            |  |
-    | |           |o(unencrypted)2|            |o |    (encrypted channel     |  1|           |o (unencrypted)0|            |  |
-    | |           |m              |            |m |      by key 'abcd')       |   |           |m               |            |  |
-    | +-----------+               +------------+  |                           |   +-----------+                +------------+  |
-    |                                             |                           |                                                |
-    +---------------------------------------------+                           +------------------------------------------------+
-
-
-
-# method of encryption
-this program supports two encryption methods:
-
-## XOR (default, legacy)
-currently the default encryption uses XOR. mainly bc i use a mips_ar71xx router as client.router's cpu is slow,i personally need fast processing speed.and XOR is enough for fooling the firewall i have encountered.
-
-## ChaCha20 (recommended for stronger encryption)
-ChaCha20 is a modern stream cipher designed by D. J. Bernstein. It provides:
-- **Strong cryptographic security**: Much stronger than XOR
-- **Lightweight and fast**: Optimized for software implementation, no lookup tables needed
-- **Less common**: Helps avoid detection by making traffic patterns less recognizable
-- **Cache-timing attack resistant**: No table lookups means consistent timing
-
-To use ChaCha20 encryption, add the `-c` flag when starting the forwarder:
 ```
-./forward -l0.0.0.0:9001 -r127.0.0.1:9000 -a'abcd' -c > /dev/null &
+[Client App] -> [Client Tunnel] -> (Pool of encrypted connections) -> [Server Tunnel] -> [Target Server]
 ```
 
-**Important**: Both sides of the tunnel must use the same encryption method. If one side uses `-c`, the other side must also use `-c`.
+### Client Side
 
-nevertheless,you can easily integrate your own encrytion algotirhm into this program if you need different encryption.all you need to do is to rewrite 'void encrypt(char * input,int len,char *key)' and 'void decrypt(char * input,int len,char *key)'.
+- Accepts local connections
+- Assigns session IDs to each connection
+- Distributes traffic across connection pool
+- Rotates connections based on message count or time
 
-# traffic obfuscation
+### Server Side
 
-## STUN-like padding
-When encryption is enabled (using either `-a` or `-b` flag), the program automatically adds padding that makes the encrypted traffic look like WebRTC STUN (Session Traversal Utilities for NAT) packets. This helps the tunnel traffic blend in with legitimate WebRTC traffic, making it harder for firewalls to detect and block.
+- Receives encrypted traffic from multiple pooled connections
+- Extracts session ID from headers
+- Maintains separate connection to target for each session
+- Forwards decrypted traffic to appropriate target
 
-**STUN Header Structure:**
-Each encrypted packet is wrapped with a 20-byte STUN header containing:
-- Message Type: 0x0001 (STUN Binding Request)
-- Message Length: Size of the encrypted payload
-- Magic Cookie: 0x2112A442 (standard STUN identifier)
-- Transaction ID: 12 random bytes (with padding metadata)
+## Building
 
-The STUN header remains unencrypted so that Deep Packet Inspection (DPI) systems will see what appears to be legitimate STUN/WebRTC traffic, while the actual data payload is encrypted underneath.
+```bash
+make
+make install  # Install to /usr/local/bin
+make debug    # Build with debug symbols and AddressSanitizer
+make clean    # Clean build artifacts
+```
 
-This feature is automatic when using encryption - no additional flags needed.
+## Usage
+
+### TCP Forwarding
+
+Client side:
+
+```bash
+./tunnel client 127.0.0.1 8080 server.example.com 9090 target.example.com 443 mysecretkey
+```
+
+Server side:
+
+```bash
+./tunnel server 0.0.0.0 9090 0.0.0.0 0 127.0.0.1 443 mysecretkey
+```
+
+### UDP Forwarding
+
+Client side:
+
+```bash
+./tunnel client 127.0.0.1 8080 server.example.com 9090 target.example.com 53 mysecretkey --udp
+```
+
+Server side:
+
+```bash
+./tunnel server 0.0.0.0 9090 0.0.0.0 0 8.8.8.8 53 mysecretkey --udp
+```
+
+## Configuration
+
+The tunnel automatically manages:
+
+- **Pool Size**: 3 connections by default
+- **Rotation Interval**: Every 5 seconds or 5 messages
+- **Buffer Size**: 64KB for optimal performance
+- **Keep-Alive**: Enabled for TCP connections
+
+## Protocol
+
+Each packet contains a header with:
+
+- `session_id` (4 bytes): Unique session identifier
+- `data_len` (2 bytes): Length of payload
+- `flags` (1 byte): Protocol flags (0x01 for UDP)
+- `reserved` (1 byte): Reserved for future use
+
+## File Structure
+
+- `tunnel.hpp` - Base tunnel interface
+- `config.hpp` - Configuration constants and structures
+- `crypto.hpp/cpp` - Encryption/decryption functionality
+- `connection.hpp/cpp` - Individual connection management
+- `connection_pool.hpp/cpp` - Pool management with rotation
+- `session_store.hpp/cpp` - Session tracking for server side
+- `client_tcp_tunnel.hpp/cpp` - TCP client implementation
+- `server_tcp_tunnel.hpp/cpp` - TCP server implementation
+- `client_udp_tunnel.hpp/cpp` - UDP client implementation
+- `server_udp_tunnel.hpp/cpp` - UDP server implementation
+- `main.cpp` - Entry point and tunnel selection
+
+## Dependencies
+
+- OpenSSL for encryption
+- C++17 compatible compiler
+- Linux with epoll support
+
+## Performance Optimizations
+
+- Non-blocking I/O with epoll
+- TCP_NODELAY for low latency
+- Connection reuse for server-side targets
+- Efficient buffer management
+- Minimal packet overhead (8 bytes header)
+
+## Security
+
+- AES-256-CBC encryption
+- Key derivation using PBKDF
+- Session isolation
+- No plaintext traffic exposure
