@@ -15,8 +15,6 @@ class ServerUdpTunnel : public Tunnel
 private:
     std::string local_addr;
     int local_port;
-    std::string remote_addr;
-    int remote_port;
     std::string key;
 
     std::unique_ptr<Crypto> crypto;
@@ -25,12 +23,13 @@ private:
     int listen_fd;
     int epoll_fd;
     std::unordered_map<uint32_t, Connection *> session_targets;
-    std::thread response_thread;
+    std::unordered_map<int, uint32_t> target_fd_to_session;
 
     void setup_listener();
     void handle_request_data();
     void forward_to_target(uint8_t *data, size_t len);
-    void monitor_target_responses();
+    void add_target_to_epoll(Connection *target_conn, uint32_t session_id);
+    void handle_target_response(int target_fd);
     void forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len);
 
 public:

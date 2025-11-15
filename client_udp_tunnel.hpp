@@ -20,8 +20,6 @@ class ClientUdpTunnel : public Tunnel
 private:
     std::string local_addr;
     int local_port;
-    std::string remote_addr;
-    int remote_port;
     std::string response_addr;
     int response_port;
     std::string key;

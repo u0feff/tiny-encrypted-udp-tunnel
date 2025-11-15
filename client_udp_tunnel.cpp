@@ -13,7 +13,6 @@ ClientUdpTunnel::ClientUdpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &response_addr, int response_port,
                                  const std::string &key)
     : local_addr(local_addr), local_port(local_port),
-      remote_addr(remote_addr), remote_port(remote_port),
       response_addr(response_addr), response_port(response_port), key(key)
 {
     crypto = std::make_unique<Crypto>(key);

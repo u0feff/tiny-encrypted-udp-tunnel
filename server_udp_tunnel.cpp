@@ -12,26 +12,18 @@ ServerUdpTunnel::ServerUdpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
                                  const std::string &response_addr, int response_port,
                                  const std::string &key)
-    : local_addr(local_addr), local_port(local_port),
-      remote_addr(remote_addr), remote_port(remote_port), key(key)
+    : local_addr(local_addr), local_port(local_port), key(key)
 {
     crypto = std::make_unique<Crypto>(key);
     session_store = std::make_unique<SessionStore>(remote_addr, remote_port, Protocol::UDP);
     response_pool = std::make_unique<ConnectionPool>(response_addr, response_port, Protocol::UDP);
     epoll_fd = epoll_create1(0);
     setup_listener();
-
-    // Start response monitoring thread
-    response_thread = std::thread(&ServerUdpTunnel::monitor_target_responses, this);
 }
 
 ServerUdpTunnel::~ServerUdpTunnel()
 {
     running = false;
-    if (response_thread.joinable())
-    {
-        response_thread.join();
-    }
     if (listen_fd >= 0)
         close(listen_fd);
     if (epoll_fd >= 0)
@@ -75,6 +67,10 @@ void ServerUdpTunnel::run()
             {
                 handle_request_data();
             }
+            else
+            {
+                handle_target_response(events[i].data.fd);
+            }
         }
     }
 }
@@ -113,29 +109,61 @@ void ServerUdpTunnel::forward_to_target(uint8_t *data, size_t len)
     if (target_conn)
     {
         target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
-        session_targets[session_id] = target_conn;
+
+        if (session_targets.find(session_id) == session_targets.end())
+        {
+            session_targets[session_id] = target_conn;
+            add_target_to_epoll(target_conn, session_id);
+        }
     }
 }
 
-void ServerUdpTunnel::monitor_target_responses()
+void ServerUdpTunnel::add_target_to_epoll(Connection *target_conn, uint32_t session_id)
+{
+    int target_fd = target_conn->get_fd();
+
+    if (target_fd_to_session.find(target_fd) != target_fd_to_session.end())
+    {
+        return;
+    }
+
+    target_fd_to_session[target_fd] = session_id;
+
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = target_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
+}
+
+void ServerUdpTunnel::handle_target_response(int target_fd)
 {
     uint8_t buffer[BUFFER_SIZE];
 
-    while (running)
+    auto it = target_fd_to_session.find(target_fd);
+    if (it == target_fd_to_session.end())
     {
-        for (auto &[session_id, target_conn] : session_targets)
-        {
-            if (!target_conn)
-                continue;
+        return;
+    }
 
-            ssize_t len = target_conn->recv_data(buffer, BUFFER_SIZE);
-            if (len > 0)
-            {
-                forward_response_to_client(session_id, buffer, len);
-            }
-        }
+    uint32_t session_id = it->second;
+    Connection *target_conn = session_targets[session_id];
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!target_conn)
+    {
+        return;
+    }
+
+    ssize_t len = target_conn->recv_data(buffer, BUFFER_SIZE);
+    if (len > 0)
+    {
+        forward_response_to_client(session_id, buffer, len);
+    }
+    else if (len == 0)
+    {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, target_fd, nullptr);
+        target_fd_to_session.erase(target_fd);
+        session_targets.erase(session_id);
+        session_store->remove_session(session_id);
     }
 }
 
