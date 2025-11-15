@@ -8,6 +8,7 @@
 #include <string>
 #include "connection.hpp"
 #include "config.hpp"
+#include "protocol.hpp"
 
 class ConnectionPool
 {

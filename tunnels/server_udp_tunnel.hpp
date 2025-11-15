@@ -1,23 +1,22 @@
 #ifndef SERVER_UDP_TUNNEL_HPP
 #define SERVER_UDP_TUNNEL_HPP
 
-#include "tunnel.hpp"
-#include "crypto.hpp"
-#include "session_store.hpp"
-#include "connection_pool.hpp"
 #include <memory>
 #include <unordered_map>
 #include <netinet/in.h>
 #include <thread>
+#include "tunnel.hpp"
+#include "crypto/crypto.hpp"
+#include "session_store.hpp"
+#include "connection_pool.hpp"
 
 class ServerUdpTunnel : public Tunnel
 {
 private:
     std::string local_addr;
     int local_port;
-    std::string key;
+    std::shared_ptr<Crypto> crypto;
 
-    std::unique_ptr<Crypto> crypto;
     std::unique_ptr<SessionStore> session_store;
     std::unique_ptr<ConnectionPool> response_pool;
     int listen_fd;
@@ -36,7 +35,7 @@ public:
     ServerUdpTunnel(const std::string &local_addr, int local_port,
                     const std::string &remote_addr, int remote_port,
                     const std::string &response_addr, int response_port,
-                    const std::string &key);
+                    std::shared_ptr<Crypto> crypto);
     ~ServerUdpTunnel();
     void run() override;
 };

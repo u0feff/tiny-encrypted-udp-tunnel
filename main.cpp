@@ -1,11 +1,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include "tunnel.hpp"
-#include "client_tcp_tunnel.hpp"
-#include "server_tcp_tunnel.hpp"
-#include "client_udp_tunnel.hpp"
-#include "server_udp_tunnel.hpp"
+#include "crypto/aes_crypto.hpp"
+#include "tunnels/tunnel.hpp"
+#include "tunnels/client_tcp_tunnel.hpp"
+#include "tunnels/server_tcp_tunnel.hpp"
+#include "tunnels/client_udp_tunnel.hpp"
+#include "tunnels/server_udp_tunnel.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -37,6 +38,8 @@ int main(int argc, char *argv[])
 
     try
     {
+        auto crypto = std::make_shared<AesCrypto>(key);
+
         std::unique_ptr<Tunnel> tunnel;
 
         if (mode == "client")
@@ -44,14 +47,18 @@ int main(int argc, char *argv[])
             if (use_udp)
             {
                 tunnel = std::make_unique<ClientUdpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port,
-                    response_addr, response_port, key);
+                    local_addr, local_port,
+                    remote_addr, remote_port,
+                    response_addr, response_port,
+                    crypto);
             }
             else
             {
                 tunnel = std::make_unique<ClientTcpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port,
-                    response_addr, response_port, key);
+                    local_addr, local_port,
+                    remote_addr, remote_port,
+                    response_addr, response_port,
+                    crypto);
             }
         }
         else if (mode == "server")
@@ -59,14 +66,18 @@ int main(int argc, char *argv[])
             if (use_udp)
             {
                 tunnel = std::make_unique<ServerUdpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port,
-                    response_addr, response_port, key);
+                    local_addr, local_port,
+                    remote_addr, remote_port,
+                    response_addr, response_port,
+                    crypto);
             }
             else
             {
                 tunnel = std::make_unique<ServerTcpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port,
-                    response_addr, response_port, key);
+                    local_addr, local_port,
+                    remote_addr, remote_port,
+                    response_addr, response_port,
+                    crypto);
             }
         }
         else

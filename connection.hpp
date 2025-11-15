@@ -6,6 +6,7 @@
 #include <chrono>
 #include <netinet/in.h>
 #include "config.hpp"
+#include "protocol.hpp"
 
 class Connection
 {

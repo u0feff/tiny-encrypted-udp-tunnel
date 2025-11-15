@@ -1,5 +1,3 @@
-#include "server_tcp_tunnel.hpp"
-#include "config.hpp"
 #include <cstring>
 #include <unistd.h>
 #include <fcntl.h>
@@ -7,14 +5,17 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <stdexcept>
+#include "server_tcp_tunnel.hpp"
+#include "tunnel_header.hpp"
+#include "tunnel_direction.hpp"
 
 ServerTcpTunnel::ServerTcpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
                                  const std::string &response_addr, int response_port,
-                                 const std::string &key)
-    : local_addr(local_addr), local_port(local_port), key(key)
+                                 std::shared_ptr<Crypto> crypto)
+    : local_addr(local_addr), local_port(local_port),
+      crypto(crypto)
 {
-    crypto = std::make_unique<Crypto>(key);
     session_store = std::make_unique<SessionStore>(remote_addr, remote_port, Protocol::TCP);
     response_pool = std::make_unique<ConnectionPool>(response_addr, response_port, Protocol::TCP);
     epoll_fd = epoll_create1(0);
@@ -127,7 +128,7 @@ void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len
     uint32_t session_id = ntohl(header->session_id);
     uint16_t data_len = ntohs(header->data_len);
 
-    if (header->direction != static_cast<uint8_t>(Direction::REQUEST))
+    if (header->direction != static_cast<uint8_t>(TunnelDirection::REQUEST))
         return;
     if (sizeof(TunnelHeader) + data_len > decrypted.size())
         return;
@@ -181,7 +182,7 @@ void ServerTcpTunnel::forward_response_to_client(uint32_t session_id, uint8_t *d
     header.session_id = htonl(session_id);
     header.data_len = htons(len);
     header.flags = 0;
-    header.direction = static_cast<uint8_t>(Direction::RESPONSE);
+    header.direction = static_cast<uint8_t>(TunnelDirection::RESPONSE);
 
     std::vector<uint8_t> packet;
     packet.resize(sizeof(header) + len);

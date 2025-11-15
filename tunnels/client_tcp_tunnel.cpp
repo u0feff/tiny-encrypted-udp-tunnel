@@ -1,5 +1,3 @@
-#include "client_tcp_tunnel.hpp"
-#include "config.hpp"
 #include <cstring>
 #include <unistd.h>
 #include <fcntl.h>
@@ -7,16 +5,18 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <stdexcept>
+#include "client_tcp_tunnel.hpp"
+#include "tunnel_header.hpp"
+#include "tunnel_direction.hpp"
 
 ClientTcpTunnel::ClientTcpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
                                  const std::string &response_addr, int response_port,
-                                 const std::string &key)
+                                 std::shared_ptr<Crypto> crypto)
     : local_addr(local_addr), local_port(local_port),
-      remote_addr(remote_addr), remote_port(remote_port),
-      response_addr(response_addr), response_port(response_port), key(key)
+      response_addr(response_addr), response_port(response_port),
+      crypto(crypto)
 {
-    crypto = std::make_unique<Crypto>(key);
     request_pool = std::make_unique<ConnectionPool>(remote_addr, remote_port, Protocol::TCP);
     epoll_fd = epoll_create1(0);
     setup_listener();
@@ -206,7 +206,7 @@ void ClientTcpTunnel::forward_request_to_server(int client_fd, uint8_t *data, si
     header.session_id = htonl(it->second);
     header.data_len = htons(len);
     header.flags = 0;
-    header.direction = static_cast<uint8_t>(Direction::REQUEST);
+    header.direction = static_cast<uint8_t>(TunnelDirection::REQUEST);
 
     std::vector<uint8_t> packet;
     packet.resize(sizeof(header) + len);
@@ -232,7 +232,7 @@ void ClientTcpTunnel::forward_response_to_client(int response_fd, uint8_t *data,
     uint32_t session_id = ntohl(header->session_id);
     uint16_t data_len = ntohs(header->data_len);
 
-    if (header->direction != static_cast<uint8_t>(Direction::RESPONSE))
+    if (header->direction != static_cast<uint8_t>(TunnelDirection::RESPONSE))
         return;
     if (sizeof(TunnelHeader) + data_len > decrypted.size())
         return;

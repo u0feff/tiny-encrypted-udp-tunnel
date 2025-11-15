@@ -1,8 +1,8 @@
-#include "crypto.hpp"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include "aes_crypto.hpp"
 
-Crypto::Crypto(const std::string &password)
+AesCrypto::AesCrypto(const std::string &password)
 {
     ctx = EVP_CIPHER_CTX_new();
     EVP_BytesToKey(EVP_aes_256_cbc(), EVP_sha256(), nullptr,
@@ -10,12 +10,12 @@ Crypto::Crypto(const std::string &password)
                    password.length(), 1, key, iv);
 }
 
-Crypto::~Crypto()
+AesCrypto::~AesCrypto()
 {
     EVP_CIPHER_CTX_free(ctx);
 }
 
-std::vector<uint8_t> Crypto::encrypt(const uint8_t *data, size_t len)
+std::vector<uint8_t> AesCrypto::encrypt(const uint8_t *data, size_t len)
 {
     EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key, iv);
 
@@ -30,7 +30,7 @@ std::vector<uint8_t> Crypto::encrypt(const uint8_t *data, size_t len)
     return encrypted;
 }
 
-std::vector<uint8_t> Crypto::decrypt(const uint8_t *data, size_t len)
+std::vector<uint8_t> AesCrypto::decrypt(const uint8_t *data, size_t len)
 {
     EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key, iv);
 

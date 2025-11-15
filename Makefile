@@ -1,35 +1,41 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -pthread
+CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -pthread -I.
 LDFLAGS = -lcrypto -lssl -pthread
 
-TARGET = tiny-tunnel
+TARGET = bin/tiny-tunnel
 
 SOURCES = main.cpp \
-          crypto.cpp \
+          crypto/aes_crypto.cpp \
           connection.cpp \
           connection_pool.cpp \
           session_store.cpp \
-          client_tcp_tunnel.cpp \
-          server_tcp_tunnel.cpp \
-          client_udp_tunnel.cpp \
-          server_udp_tunnel.cpp
+          tunnels/client_tcp_tunnel.cpp \
+          tunnels/server_tcp_tunnel.cpp \
+          tunnels/client_udp_tunnel.cpp \
+          tunnels/server_udp_tunnel.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
 
-HEADERS = tunnel.hpp \
-          config.hpp \
-          crypto.hpp \
+HEADERS = config.hpp \
+          crypto/crypto.hpp \
+          crypto/aes_crypto.hpp \
           connection.hpp \
           connection_pool.hpp \
           session_store.hpp \
-          client_tcp_tunnel.hpp \
-          server_tcp_tunnel.hpp \
-          client_udp_tunnel.hpp \
-          server_udp_tunnel.hpp
+          tunnels/tunnel.hpp \
+          tunnels/tunnel_header.hpp \
+          tunnels/tunnel_direction.hpp \
+          tunnels/client_tcp_tunnel.hpp \
+          tunnels/server_tcp_tunnel.hpp \
+          tunnels/client_udp_tunnel.hpp \
+          tunnels/server_udp_tunnel.hpp
 
-.PHONY: all clean install debug test
+.PHONY: all clean install debug test directories
 
-all: $(TARGET)
+all: directories $(TARGET)
+
+directories:
+	@mkdir -p bin
 
 $(TARGET): $(OBJECTS)
 	$(CXX) $(OBJECTS) -o $(TARGET) $(LDFLAGS)
@@ -46,3 +52,4 @@ install: $(TARGET)
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
+	rm -rf bin

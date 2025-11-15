@@ -10,7 +10,6 @@
 Connection::Connection(const std::string &addr, int port, Protocol proto)
     : protocol(proto), creation_time(std::chrono::steady_clock::now())
 {
-
     if (protocol == Protocol::UDP)
     {
         sockfd = socket(AF_INET, SOCK_DGRAM, 0);

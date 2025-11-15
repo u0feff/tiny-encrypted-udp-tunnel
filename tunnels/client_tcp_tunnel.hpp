@@ -1,25 +1,22 @@
 #ifndef CLIENT_TCP_TUNNEL_HPP
 #define CLIENT_TCP_TUNNEL_HPP
 
-#include "tunnel.hpp"
-#include "crypto.hpp"
-#include "connection_pool.hpp"
 #include <memory>
 #include <unordered_map>
 #include <netinet/in.h>
+#include "tunnel.hpp"
+#include "crypto/crypto.hpp"
+#include "connection_pool.hpp"
 
 class ClientTcpTunnel : public Tunnel
 {
 private:
     std::string local_addr;
     int local_port;
-    std::string remote_addr;
-    int remote_port;
     std::string response_addr;
     int response_port;
-    std::string key;
+    std::shared_ptr<Crypto> crypto;
 
-    std::unique_ptr<Crypto> crypto;
     std::unique_ptr<ConnectionPool> request_pool;
     int listen_fd;
     int response_listen_fd;
@@ -41,7 +38,7 @@ public:
     ClientTcpTunnel(const std::string &local_addr, int local_port,
                     const std::string &remote_addr, int remote_port,
                     const std::string &response_addr, int response_port,
-                    const std::string &key);
+                    std::shared_ptr<Crypto> crypto);
     ~ClientTcpTunnel();
     void run() override;
 };
