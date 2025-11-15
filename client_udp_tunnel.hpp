@@ -8,6 +8,13 @@
 #include <unordered_map>
 #include <netinet/in.h>
 
+struct UdpSession
+{
+    sockaddr_in client_addr;
+    uint32_t session_id;
+    std::chrono::steady_clock::time_point last_activity;
+};
+
 class ClientUdpTunnel : public Tunnel
 {
 private:
@@ -15,22 +22,31 @@ private:
     int local_port;
     std::string remote_addr;
     int remote_port;
+    std::string response_addr;
+    int response_port;
     std::string key;
 
     std::unique_ptr<Crypto> crypto;
-    std::unique_ptr<ConnectionPool> pool;
+    std::unique_ptr<ConnectionPool> request_pool;
     int listen_fd;
+    int response_listen_fd;
     int epoll_fd;
     std::atomic<uint32_t> next_session_id{1};
-    std::unordered_map<uint32_t, sockaddr_in> udp_sessions;
+    std::unordered_map<uint32_t, sockaddr_in> session_to_client;
+    std::unordered_map<std::string, UdpSession> client_to_session;
 
     void setup_listener();
-    void handle_udp_data();
-    void forward_to_server(uint8_t *data, size_t len, const sockaddr_in &sender);
+    void setup_response_listener();
+    void handle_client_data();
+    void handle_response_data();
+    void forward_request_to_server(uint8_t *data, size_t len, const sockaddr_in &sender);
+    void forward_response_to_client(uint8_t *data, size_t len);
+    std::string addr_to_string(const sockaddr_in &addr);
 
 public:
     ClientUdpTunnel(const std::string &local_addr, int local_port,
                     const std::string &remote_addr, int remote_port,
+                    const std::string &response_addr, int response_port,
                     const std::string &key);
     ~ClientUdpTunnel();
     void run() override;

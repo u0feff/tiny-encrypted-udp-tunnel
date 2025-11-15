@@ -57,4 +57,4 @@ run-client-udp:
 	./$(TARGET) client 127.0.0.1 9090 127.0.0.1 9091 mysecretkey --udp
 
 run-server-udp:
-	./$(TARGET) server 127.0.0.1 9091 77.110.99.232 8495 mysecretkey --udp
+	./$(TARGET) server 127.0.0.1 9091 127.0.0.1 9092 mysecretkey --udp

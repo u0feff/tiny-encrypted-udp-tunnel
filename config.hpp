@@ -15,12 +15,18 @@ enum class Protocol
     UDP
 };
 
+enum class Direction
+{
+    REQUEST,
+    RESPONSE
+};
+
 struct TunnelHeader
 {
     uint32_t session_id;
     uint16_t data_len;
     uint8_t flags;
-    uint8_t reserved;
+    uint8_t direction; // 0 = request, 1 = response
 };
 
 #endif

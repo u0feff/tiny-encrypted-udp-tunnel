@@ -4,32 +4,39 @@
 #include "tunnel.hpp"
 #include "crypto.hpp"
 #include "session_store.hpp"
+#include "connection_pool.hpp"
 #include <memory>
 #include <unordered_map>
 #include <netinet/in.h>
+#include <thread>
 
 class ServerUdpTunnel : public Tunnel
 {
 private:
     std::string local_addr;
     int local_port;
-    std::string target_addr;
-    int target_port;
+    std::string remote_addr;
+    int remote_port;
     std::string key;
 
     std::unique_ptr<Crypto> crypto;
     std::unique_ptr<SessionStore> session_store;
+    std::unique_ptr<ConnectionPool> response_pool;
     int listen_fd;
     int epoll_fd;
-    std::unordered_map<uint32_t, sockaddr_in> udp_sessions;
+    std::unordered_map<uint32_t, Connection *> session_targets;
+    std::thread response_thread;
 
     void setup_listener();
-    void handle_udp_data();
-    void forward_to_target(uint8_t *data, size_t len, const sockaddr_in &sender);
+    void handle_request_data();
+    void forward_to_target(uint8_t *data, size_t len);
+    void monitor_target_responses();
+    void forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len);
 
 public:
     ServerUdpTunnel(const std::string &local_addr, int local_port,
-                    const std::string &target_addr, int target_port,
+                    const std::string &remote_addr, int remote_port,
+                    const std::string &response_addr, int response_port,
                     const std::string &key);
     ~ServerUdpTunnel();
     void run() override;

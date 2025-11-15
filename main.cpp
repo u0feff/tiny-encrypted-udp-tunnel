@@ -9,11 +9,19 @@
 
 int main(int argc, char *argv[])
 {
-    if (argc < 6)
+    if (argc < 8)
     {
         std::cerr << "Usage: " << argv[0]
                   << " <client|server> <local_addr> <local_port> <remote_addr> <remote_port> "
-                  << "<key> [--udp]" << std::endl;
+                  << "<response_addr> <response_port> <key> [--udp]" << std::endl;
+        std::cerr << "\nFor client:" << std::endl;
+        std::cerr << "  local_addr:local_port - listen for client connections" << std::endl;
+        std::cerr << "  remote_addr:remote_port - send requests to server" << std::endl;
+        std::cerr << "  response_addr:response_port - listen for responses from server" << std::endl;
+        std::cerr << "\nFor server:" << std::endl;
+        std::cerr << "  local_addr:local_port - listen for requests" << std::endl;
+        std::cerr << "  remote_addr:remote_port - send requests to destination" << std::endl;
+        std::cerr << "  response_addr:response_port - send responses to client" << std::endl;
         return 1;
     }
 
@@ -22,8 +30,10 @@ int main(int argc, char *argv[])
     int local_port = std::stoi(argv[3]);
     std::string remote_addr = argv[4];
     int remote_port = std::stoi(argv[5]);
-    std::string key = argv[6];
-    bool use_udp = (argc > 7 && std::string(argv[7]) == "--udp");
+    std::string response_addr = argv[6];
+    int response_port = std::stoi(argv[7]);
+    std::string key = argv[8];
+    bool use_udp = (argc > 9 && std::string(argv[9]) == "--udp");
 
     try
     {
@@ -34,12 +44,14 @@ int main(int argc, char *argv[])
             if (use_udp)
             {
                 tunnel = std::make_unique<ClientUdpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port, key);
+                    local_addr, local_port, remote_addr, remote_port,
+                    response_addr, response_port, key);
             }
             else
             {
                 tunnel = std::make_unique<ClientTcpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port, key);
+                    local_addr, local_port, remote_addr, remote_port,
+                    response_addr, response_port, key);
             }
         }
         else if (mode == "server")
@@ -47,12 +59,14 @@ int main(int argc, char *argv[])
             if (use_udp)
             {
                 tunnel = std::make_unique<ServerUdpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port, key);
+                    local_addr, local_port, remote_addr, remote_port,
+                    response_addr, response_port, key);
             }
             else
             {
                 tunnel = std::make_unique<ServerTcpTunnel>(
-                    local_addr, local_port, remote_addr, remote_port, key);
+                    local_addr, local_port, remote_addr + ":" + std::to_string(remote_port),
+                    response_port, key);
             }
         }
         else

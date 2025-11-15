@@ -9,13 +9,20 @@
 #include <stdexcept>
 
 ServerTcpTunnel::ServerTcpTunnel(const std::string &local_addr, int local_port,
-                                 const std::string &target_addr, int target_port,
+                                 const std::string &remote_addr, int remote_port,
                                  const std::string &key)
     : local_addr(local_addr), local_port(local_port),
-      target_addr(target_addr), target_port(target_port), key(key)
+      remote_addr(remote_addr), remote_port(remote_port), key(key)
 {
     crypto = std::make_unique<Crypto>(key);
+
+    // Extract target address from remote_addr (assuming format "target_addr:target_port")
+    size_t colon_pos = remote_addr.find(':');
+    std::string target_addr = remote_addr.substr(0, colon_pos);
+    int target_port = std::stoi(remote_addr.substr(colon_pos + 1));
+
     session_store = std::make_unique<SessionStore>(target_addr, target_port, Protocol::TCP);
+    response_pool = std::make_unique<ConnectionPool>(remote_addr, remote_port, Protocol::TCP);
     epoll_fd = epoll_create1(0);
     setup_listener();
 }
@@ -52,6 +59,7 @@ void ServerTcpTunnel::setup_listener()
     epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = listen_fd;
+    ev.data.ptr = (void *)1; // Mark as server listener
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev);
 }
 
@@ -71,7 +79,15 @@ void ServerTcpTunnel::run()
             }
             else
             {
-                handle_data(events[i].data.fd);
+                uintptr_t type = (uintptr_t)events[i].data.ptr;
+                if (type == 2)
+                { // Client connection
+                    handle_data(events[i].data.fd);
+                }
+                else if (type == 3)
+                { // Target connection
+                    handle_target_response(events[i].data.fd);
+                }
             }
         }
     }
@@ -89,6 +105,7 @@ void ServerTcpTunnel::handle_new_connection()
         epoll_event ev;
         ev.events = EPOLLIN;
         ev.data.fd = client_fd;
+        ev.data.ptr = (void *)2; // Mark as client connection
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
     }
 }
@@ -108,6 +125,31 @@ void ServerTcpTunnel::handle_data(int fd)
     forward_to_target(fd, buffer, len);
 }
 
+void ServerTcpTunnel::handle_target_response(int target_fd)
+{
+    uint8_t buffer[BUFFER_SIZE];
+    ssize_t len = recv(target_fd, buffer, BUFFER_SIZE, 0);
+
+    if (len <= 0)
+    {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, target_fd, nullptr);
+        close(target_fd);
+        auto it = target_to_session.find(target_fd);
+        if (it != target_to_session.end())
+        {
+            session_store->remove_session(it->second);
+            target_to_session.erase(target_fd);
+        }
+        return;
+    }
+
+    auto it = target_to_session.find(target_fd);
+    if (it != target_to_session.end())
+    {
+        forward_response_to_client(it->second, buffer, len);
+    }
+}
+
 void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len)
 {
     auto decrypted = crypto->decrypt(data, len);
@@ -118,6 +160,8 @@ void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len
     uint32_t session_id = ntohl(header->session_id);
     uint16_t data_len = ntohs(header->data_len);
 
+    if (header->direction != static_cast<uint8_t>(Direction::REQUEST))
+        return;
     if (sizeof(TunnelHeader) + data_len > decrypted.size())
         return;
 
@@ -125,5 +169,38 @@ void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len
     if (target_conn)
     {
         target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
+
+        // Track target connection for responses
+        int target_fd = target_conn->get_fd();
+        target_to_session[target_fd] = session_id;
+
+        // Add target to epoll for response monitoring
+        epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.fd = target_fd;
+        ev.data.ptr = (void *)3; // Mark as target connection
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
+    }
+}
+
+void ServerTcpTunnel::forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len)
+{
+    TunnelHeader header;
+    header.session_id = htonl(session_id);
+    header.data_len = htons(len);
+    header.flags = 0;
+    header.direction = static_cast<uint8_t>(Direction::RESPONSE);
+
+    std::vector<uint8_t> packet;
+    packet.resize(sizeof(header) + len);
+    memcpy(packet.data(), &header, sizeof(header));
+    memcpy(packet.data() + sizeof(header), data, len);
+
+    auto encrypted = crypto->encrypt(packet.data(), packet.size());
+
+    Connection *conn = response_pool->get_current();
+    if (conn)
+    {
+        conn->send_data(encrypted.data(), encrypted.size());
     }
 }
