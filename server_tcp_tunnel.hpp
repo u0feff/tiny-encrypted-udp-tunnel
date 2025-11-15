@@ -28,13 +28,14 @@ private:
     void setup_listener();
     void handle_new_connection();
     void handle_data(int fd);
-    void handle_target_response(int target_fd);
     void forward_to_target(int server_fd, uint8_t *data, size_t len);
+    void handle_target_response(int target_fd);
     void forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len);
 
 public:
     ServerTcpTunnel(const std::string &local_addr, int local_port,
                     const std::string &remote_addr, int remote_port,
+                    const std::string &response_addr, int response_port,
                     const std::string &key);
     ~ServerTcpTunnel();
     void run() override;

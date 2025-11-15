@@ -65,8 +65,8 @@ int main(int argc, char *argv[])
             else
             {
                 tunnel = std::make_unique<ServerTcpTunnel>(
-                    local_addr, local_port, remote_addr + ":" + std::to_string(remote_port),
-                    response_port, key);
+                    local_addr, local_port, remote_addr, remote_port,
+                    response_addr, response_port, key);
             }
         }
         else
