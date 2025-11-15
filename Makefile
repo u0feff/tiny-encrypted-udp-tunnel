@@ -46,15 +46,3 @@ install: $(TARGET)
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
-
-run-client-tcp:
-	./$(TARGET) client 127.0.0.1 9090 127.0.0.1 9091 mysecretkey
-
-run-server-tcp:
-	./$(TARGET) server 127.0.0.1 9091 google.com 443 mysecretkey
-
-run-client-udp:
-	./$(TARGET) client 127.0.0.1 9090 127.0.0.1 9091 mysecretkey --udp
-
-run-server-udp:
-	./$(TARGET) server 127.0.0.1 9091 127.0.0.1 9092 mysecretkey --udp
