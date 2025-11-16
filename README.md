@@ -8,6 +8,7 @@ Bidirectional lightweight tunnel for TCP and UDP forwarding with connection pool
 - **Automatic Rotation**: Rotates connections based on message count or time interval
 - **Encryption**: Encryption for all traffic
 - **TCP & UDP Support**: Full forwarding capability for both protocols
+- **IPv4 & IPv6 Support**: Works with both IPv4 and IPv6 addresses
 - **Automatic Failover**: Uses next connection in pool if current fails
 
 ## How It Works
@@ -56,6 +57,23 @@ Server:
 ```
 
 For UDP add flag `--udp` at end
+
+### IPv6 Support
+
+The tunnel automatically detects and supports IPv6 addresses:
+
+```bash
+# IPv6 client
+./tiny-tunnel client ::1 8000 ::1 8001 ::1 8803 mysecretkey
+
+# IPv6 server
+./tiny-tunnel server ::1 8001 ::1 8002 ::1 8803 mysecretkey
+
+# IPv6 with UDP
+./tiny-tunnel client ::1 8000 ::1 8001 ::1 8803 mysecretkey --udp
+```
+
+You can also mix IPv4 and IPv6 addresses as needed for different endpoints.
 
 ## Configuration
 
