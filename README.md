@@ -32,7 +32,7 @@ Requires OpenSSL and a C++17 compatible compiler (Linux with epoll support).
 #### Debian
 
 ```bash
-sudo apt install libssl-dev
+sudo apt install libssl-dev libcli11-dev
 ```
 
 ### Building
