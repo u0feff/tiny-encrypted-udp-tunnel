@@ -10,6 +10,9 @@
 #include "tunnel_direction.hpp"
 #include "network_utils.hpp"
 
+constexpr uintptr_t CONN_TYPE_REQUEST = 3;
+constexpr uintptr_t CONN_TYPE_RESPONSE = 4;
+
 ClientTcpTunnel::ClientTcpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
                                  const std::string &response_addr, int response_port,
@@ -99,7 +102,7 @@ void ClientTcpTunnel::run()
         {
             if (events[i].data.fd == listen_fd)
             {
-                handle_new_connection();
+                handle_source_connection();
             }
             else if (events[i].data.fd == response_listen_fd)
             {
@@ -108,12 +111,12 @@ void ClientTcpTunnel::run()
             else
             {
                 uintptr_t type = (uintptr_t)events[i].data.ptr;
-                if (type == 3)
-                { // Client connection
-                    handle_client_data(events[i].data.fd);
+                if (type == CONN_TYPE_REQUEST)
+                {
+                    handle_request_data(events[i].data.fd);
                 }
-                else if (type == 4)
-                { // Response connection
+                else if (type == CONN_TYPE_RESPONSE)
+                {
                     handle_response_data(events[i].data.fd);
                 }
             }
@@ -121,25 +124,25 @@ void ClientTcpTunnel::run()
     }
 }
 
-void ClientTcpTunnel::handle_new_connection()
+void ClientTcpTunnel::handle_source_connection()
 {
     sockaddr_storage client_addr;
     socklen_t addr_len = sizeof(client_addr);
-    int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
+    int source_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
 
-    if (client_fd >= 0)
-    {
-        fcntl(client_fd, F_SETFL, O_NONBLOCK);
-        epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = client_fd;
-        ev.data.ptr = (void *)3; // Mark as client connection
-        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+    if (source_fd < 0)
+        return;
 
-        uint32_t session_id = next_session_id++;
-        client_sessions[client_fd] = session_id;
-        session_to_client[session_id] = client_fd;
-    }
+    fcntl(source_fd, F_SETFL, O_NONBLOCK);
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = source_fd;
+    ev.data.ptr = reinterpret_cast<void *>(CONN_TYPE_REQUEST);
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, source_fd, &ev);
+
+    uint32_t session_id = next_session_id++;
+    source_fd_to_session_id[source_fd] = session_id;
+    session_id_to_source_fd[session_id] = source_fd;
 }
 
 void ClientTcpTunnel::handle_response_connection()
@@ -148,18 +151,18 @@ void ClientTcpTunnel::handle_response_connection()
     socklen_t addr_len = sizeof(server_addr);
     int response_fd = accept(response_listen_fd, (struct sockaddr *)&server_addr, &addr_len);
 
-    if (response_fd >= 0)
-    {
-        fcntl(response_fd, F_SETFL, O_NONBLOCK);
-        epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = response_fd;
-        ev.data.ptr = (void *)4; // Mark as response connection
-        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, response_fd, &ev);
-    }
+    if (response_fd < 0)
+        return;
+
+    fcntl(response_fd, F_SETFL, O_NONBLOCK);
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = response_fd;
+    ev.data.ptr = reinterpret_cast<void *>(CONN_TYPE_RESPONSE);
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, response_fd, &ev);
 }
 
-void ClientTcpTunnel::handle_client_data(int fd)
+void ClientTcpTunnel::handle_request_data(int fd)
 {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t len = recv(fd, buffer, BUFFER_SIZE, 0);
@@ -168,37 +171,22 @@ void ClientTcpTunnel::handle_client_data(int fd)
     {
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
         close(fd);
-        auto it = client_sessions.find(fd);
-        if (it != client_sessions.end())
+        auto it = source_fd_to_session_id.find(fd);
+        if (it != source_fd_to_session_id.end())
         {
-            session_to_client.erase(it->second);
-            client_sessions.erase(fd);
+            session_id_to_source_fd.erase(it->second);
+            source_fd_to_session_id.erase(fd);
         }
         return;
     }
 
-    forward_request_to_server(fd, buffer, len);
+    forward_request_to_server(buffer, len, fd);
 }
 
-void ClientTcpTunnel::handle_response_data(int fd)
+void ClientTcpTunnel::forward_request_to_server(uint8_t *data, size_t len, int source_fd)
 {
-    uint8_t buffer[BUFFER_SIZE];
-    ssize_t len = recv(fd, buffer, BUFFER_SIZE, 0);
-
-    if (len <= 0)
-    {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-        close(fd);
-        return;
-    }
-
-    forward_response_to_client(fd, buffer, len);
-}
-
-void ClientTcpTunnel::forward_request_to_server(int client_fd, uint8_t *data, size_t len)
-{
-    auto it = client_sessions.find(client_fd);
-    if (it == client_sessions.end())
+    auto it = source_fd_to_session_id.find(source_fd);
+    if (it == source_fd_to_session_id.end())
         return;
 
     TunnelHeader header;
@@ -221,7 +209,22 @@ void ClientTcpTunnel::forward_request_to_server(int client_fd, uint8_t *data, si
     }
 }
 
-void ClientTcpTunnel::forward_response_to_client(int response_fd, uint8_t *data, size_t len)
+void ClientTcpTunnel::handle_response_data(int fd)
+{
+    uint8_t buffer[BUFFER_SIZE];
+    ssize_t len = recv(fd, buffer, BUFFER_SIZE, 0);
+
+    if (len <= 0)
+    {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+        close(fd);
+        return;
+    }
+
+    forward_response_to_source(buffer, len);
+}
+
+void ClientTcpTunnel::forward_response_to_source(uint8_t *data, size_t len)
 {
     auto decrypted = crypto->decrypt(data, len);
     if (decrypted.size() < sizeof(TunnelHeader))
@@ -236,8 +239,8 @@ void ClientTcpTunnel::forward_response_to_client(int response_fd, uint8_t *data,
     if (sizeof(TunnelHeader) + data_len > decrypted.size())
         return;
 
-    auto it = session_to_client.find(session_id);
-    if (it != session_to_client.end())
+    auto it = session_id_to_source_fd.find(session_id);
+    if (it != session_id_to_source_fd.end())
     {
         send(it->second, decrypted.data() + sizeof(TunnelHeader), data_len, MSG_NOSIGNAL);
     }

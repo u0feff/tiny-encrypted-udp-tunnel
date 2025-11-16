@@ -1,7 +1,2 @@
 *.o
-tiny-tunnel
 bin/
-test_ipv6.sh
-test_ipv6_data.sh
-test_network_utils.cpp
-test_network_utils

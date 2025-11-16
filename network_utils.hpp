@@ -6,20 +6,17 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-// Detect if an address string is IPv6
 inline bool is_ipv6(const std::string &addr)
 {
     struct in6_addr result;
     return inet_pton(AF_INET6, addr.c_str(), &result) == 1;
 }
 
-// Get the appropriate address family for a given address string
 inline int get_address_family(const std::string &addr)
 {
     return is_ipv6(addr) ? AF_INET6 : AF_INET;
 }
 
-// Setup sockaddr_storage for a given address and port
 inline void setup_sockaddr(sockaddr_storage &addr_storage, socklen_t &addr_len,
                            const std::string &addr, int port)
 {

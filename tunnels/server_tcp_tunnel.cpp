@@ -69,41 +69,41 @@ void ServerTcpTunnel::run()
         {
             if (events[i].data.fd == listen_fd)
             {
-                handle_new_connection();
+                handle_client_connection();
             }
             else
             {
-                auto it = target_to_session.find(events[i].data.fd);
-                if (it != target_to_session.end())
+                auto it = target_fd_to_session_id.find(events[i].data.fd);
+                if (it != target_fd_to_session_id.end())
                 {
-                    handle_target_response(events[i].data.fd);
+                    handle_response_data(events[i].data.fd);
                 }
                 else
                 {
-                    handle_data(events[i].data.fd);
+                    handle_request_data(events[i].data.fd);
                 }
             }
         }
     }
 }
 
-void ServerTcpTunnel::handle_new_connection()
+void ServerTcpTunnel::handle_client_connection()
 {
     sockaddr_storage client_addr;
     socklen_t addr_len = sizeof(client_addr);
     int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
 
-    if (client_fd >= 0)
-    {
-        fcntl(client_fd, F_SETFL, O_NONBLOCK);
-        epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = client_fd;
-        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
-    }
+    if (client_fd < 0)
+        return;
+
+    fcntl(client_fd, F_SETFL, O_NONBLOCK);
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = client_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
 }
 
-void ServerTcpTunnel::handle_data(int fd)
+void ServerTcpTunnel::handle_request_data(int fd)
 {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t len = recv(fd, buffer, BUFFER_SIZE, 0);
@@ -115,10 +115,10 @@ void ServerTcpTunnel::handle_data(int fd)
         return;
     }
 
-    forward_to_target(fd, buffer, len);
+    forward_request_to_target(buffer, len);
 }
 
-void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len)
+void ServerTcpTunnel::forward_request_to_target(uint8_t *data, size_t len)
 {
     auto decrypted = crypto->decrypt(data, len);
     if (decrypted.size() < sizeof(TunnelHeader))
@@ -134,24 +134,31 @@ void ServerTcpTunnel::forward_to_target(int server_fd, uint8_t *data, size_t len
         return;
 
     Connection *target_conn = session_store->get_or_create_session(session_id);
-    if (target_conn)
-    {
-        target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
+    if (!target_conn)
+        return;
 
-        int target_fd = target_conn->get_fd();
-        if (target_to_session.find(target_fd) == target_to_session.end())
-        {
-            target_to_session[target_fd] = session_id;
+    target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
 
-            epoll_event ev;
-            ev.events = EPOLLIN;
-            ev.data.fd = target_fd;
-            epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
-        }
-    }
+    add_target_to_epoll(target_conn, session_id);
 }
 
-void ServerTcpTunnel::handle_target_response(int target_fd)
+void ServerTcpTunnel::add_target_to_epoll(Connection *target_conn, uint32_t session_id)
+{
+    int target_fd = target_conn->get_fd();
+
+    auto it = target_fd_to_session_id.find(target_fd);
+    if (it != target_fd_to_session_id.end())
+        return;
+
+    target_fd_to_session_id[target_fd] = session_id;
+
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = target_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
+}
+
+void ServerTcpTunnel::handle_response_data(int target_fd)
 {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t len = recv(target_fd, buffer, BUFFER_SIZE, 0);
@@ -160,17 +167,17 @@ void ServerTcpTunnel::handle_target_response(int target_fd)
     {
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, target_fd, nullptr);
         close(target_fd);
-        auto it = target_to_session.find(target_fd);
-        if (it != target_to_session.end())
+        auto it = target_fd_to_session_id.find(target_fd);
+        if (it != target_fd_to_session_id.end())
         {
             session_store->remove_session(it->second);
-            target_to_session.erase(target_fd);
+            target_fd_to_session_id.erase(target_fd);
         }
         return;
     }
 
-    auto it = target_to_session.find(target_fd);
-    if (it != target_to_session.end())
+    auto it = target_fd_to_session_id.find(target_fd);
+    if (it != target_fd_to_session_id.end())
     {
         forward_response_to_client(it->second, buffer, len);
     }

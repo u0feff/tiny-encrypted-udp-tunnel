@@ -8,14 +8,6 @@
 #include "crypto/crypto.hpp"
 #include "connection_pool.hpp"
 
-struct UdpSession
-{
-    sockaddr_storage client_addr;
-    socklen_t client_addr_len;
-    uint32_t session_id;
-    std::chrono::steady_clock::time_point last_activity;
-};
-
 class ClientUdpTunnel : public Tunnel
 {
 private:
@@ -30,16 +22,16 @@ private:
     int response_listen_fd;
     int epoll_fd;
     std::atomic<uint32_t> next_session_id{1};
-    std::unordered_map<uint32_t, std::pair<sockaddr_storage, socklen_t>> session_to_client;
-    std::unordered_map<std::string, UdpSession> client_to_session;
+    std::unordered_map<std::string, uint32_t> source_addr_to_session_id;
+    std::unordered_map<uint32_t, std::pair<sockaddr_storage, socklen_t>> session_id_to_source_addr;
 
     void setup_listener();
     void setup_response_listener();
-    void handle_client_data();
+    void handle_request_data();
+    void forward_request_to_server(uint8_t *data, size_t len, const sockaddr_storage &source_addr, socklen_t source_addr_len);
     void handle_response_data();
-    void forward_request_to_server(uint8_t *data, size_t len, const sockaddr_storage &sender, socklen_t sender_len);
-    void forward_response_to_client(uint8_t *data, size_t len);
-    std::string addr_to_string(const sockaddr_storage &addr, socklen_t addr_len);
+    void forward_response_to_source(uint8_t *data, size_t len);
+    std::string addr_to_string(const sockaddr_storage &addr);
 
 public:
     ClientUdpTunnel(const std::string &local_addr, int local_port,

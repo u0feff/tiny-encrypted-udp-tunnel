@@ -45,39 +45,26 @@ make install  # Install to /usr/local/bin
 ## Usage
 
 Client:
+
 ```bash
 #             <type> <local listener> <remote tunnel> <local response listener> <encryption key>
 ./tiny-tunnel client 0.0.0.0 8000     127.0.0.1 8001  0.0.0.0 8803              mysecretkey
 ```
 
 Server:
+
 ```bash
 #             <type> <local listener> <remote tunnel> <remote response listener> <encryption key>
 ./tiny-tunnel server 0.0.0.0 8001     127.0.0.1 8002  0.0.0.0 8803              mysecretkey
 ```
 
 For UDP add flag `--udp` at end
-
-### IPv6 Support
-
-The tunnel automatically detects and supports IPv6 addresses:
-
-```bash
-# IPv6 client
-./tiny-tunnel client ::1 8000 ::1 8001 ::1 8803 mysecretkey
-
-# IPv6 server
-./tiny-tunnel server ::1 8001 ::1 8002 ::1 8803 mysecretkey
-
-# IPv6 with UDP
-./tiny-tunnel client ::1 8000 ::1 8001 ::1 8803 mysecretkey --udp
-```
-
 You can also mix IPv4 and IPv6 addresses as needed for different endpoints.
 
 ## Configuration
 
 The tunnel automatically manages connection pooling with the following defaults:
+
 - **Pool Size**: 3 connections
 - **Rotation**: Every 5 seconds or 5 messages
 - **Buffer Size**: 64KB
@@ -85,12 +72,14 @@ The tunnel automatically manages connection pooling with the following defaults:
 ## Protocol
 
 Each packet contains an 8-byte header with:
+
 - `session_id` (4 bytes): Unique session identifier
 - `data_len` (2 bytes): Payload length
 - `flags` (1 byte): Protocol flags (0x01 for UDP)
 - `reserved` (1 byte): Reserved for future use
 
 All traffic is encrypted using selected algorithm:
+
 1. AES-256-CBC with PBKDF
 2. _its all for now_
 

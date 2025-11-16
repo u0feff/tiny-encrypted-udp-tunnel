@@ -91,7 +91,7 @@ void ClientUdpTunnel::run()
         {
             if (events[i].data.fd == listen_fd)
             {
-                handle_client_data();
+                handle_request_data();
             }
             else if (events[i].data.fd == response_listen_fd)
             {
@@ -101,7 +101,7 @@ void ClientUdpTunnel::run()
     }
 }
 
-void ClientUdpTunnel::handle_client_data()
+void ClientUdpTunnel::handle_request_data()
 {
     uint8_t buffer[BUFFER_SIZE];
     sockaddr_storage sender_addr;
@@ -110,48 +110,27 @@ void ClientUdpTunnel::handle_client_data()
     ssize_t len = recvfrom(listen_fd, buffer, BUFFER_SIZE, 0,
                            (struct sockaddr *)&sender_addr, &addr_len);
 
-    if (len > 0)
-    {
-        forward_request_to_server(buffer, len, sender_addr, addr_len);
-    }
+    if (len <= 0)
+        return;
+
+    forward_request_to_server(buffer, len, sender_addr, addr_len);
 }
 
-void ClientUdpTunnel::handle_response_data()
+void ClientUdpTunnel::forward_request_to_server(uint8_t *data, size_t len, const sockaddr_storage &source_addr, socklen_t source_addr_len)
 {
-    uint8_t buffer[BUFFER_SIZE];
-    sockaddr_storage sender_addr;
-    socklen_t addr_len = sizeof(sender_addr);
-
-    ssize_t len = recvfrom(response_listen_fd, buffer, BUFFER_SIZE, 0,
-                           (struct sockaddr *)&sender_addr, &addr_len);
-
-    if (len > 0)
-    {
-        forward_response_to_client(buffer, len);
-    }
-}
-
-void ClientUdpTunnel::forward_request_to_server(uint8_t *data, size_t len, const sockaddr_storage &sender, socklen_t sender_len)
-{
-    std::string client_key = addr_to_string(sender, sender_len);
+    std::string source_addr_str = addr_to_string(source_addr);
 
     uint32_t session_id;
-    auto it = client_to_session.find(client_key);
-    if (it == client_to_session.end())
+    auto it = source_addr_to_session_id.find(source_addr_str);
+    if (it == source_addr_to_session_id.end())
     {
         session_id = next_session_id++;
-        UdpSession session;
-        session.client_addr = sender;
-        session.client_addr_len = sender_len;
-        session.session_id = session_id;
-        session.last_activity = std::chrono::steady_clock::now();
-        client_to_session[client_key] = session;
-        session_to_client[session_id] = std::make_pair(sender, sender_len);
+        source_addr_to_session_id[source_addr_str] = session_id;
+        session_id_to_source_addr[session_id] = std::make_pair(source_addr, source_addr_len);
     }
     else
     {
-        session_id = it->second.session_id;
-        it->second.last_activity = std::chrono::steady_clock::now();
+        session_id = it->second;
     }
 
     TunnelHeader header;
@@ -174,7 +153,22 @@ void ClientUdpTunnel::forward_request_to_server(uint8_t *data, size_t len, const
     }
 }
 
-void ClientUdpTunnel::forward_response_to_client(uint8_t *data, size_t len)
+void ClientUdpTunnel::handle_response_data()
+{
+    uint8_t buffer[BUFFER_SIZE];
+    sockaddr_storage sender_addr;
+    socklen_t addr_len = sizeof(sender_addr);
+
+    ssize_t len = recvfrom(response_listen_fd, buffer, BUFFER_SIZE, 0,
+                           (struct sockaddr *)&sender_addr, &addr_len);
+
+    if (len <= 0)
+        return;
+
+    forward_response_to_source(buffer, len);
+}
+
+void ClientUdpTunnel::forward_response_to_source(uint8_t *data, size_t len)
 {
     auto decrypted = crypto->decrypt(data, len);
     if (decrypted.size() < sizeof(TunnelHeader))
@@ -189,19 +183,19 @@ void ClientUdpTunnel::forward_response_to_client(uint8_t *data, size_t len)
     if (sizeof(TunnelHeader) + data_len > decrypted.size())
         return;
 
-    auto it = session_to_client.find(session_id);
-    if (it != session_to_client.end())
+    auto it = session_id_to_source_addr.find(session_id);
+    if (it != session_id_to_source_addr.end())
     {
         sendto(listen_fd, decrypted.data() + sizeof(TunnelHeader), data_len, 0,
                (struct sockaddr *)&it->second.first, it->second.second);
     }
 }
 
-std::string ClientUdpTunnel::addr_to_string(const sockaddr_storage &addr, socklen_t addr_len)
+std::string ClientUdpTunnel::addr_to_string(const sockaddr_storage &addr)
 {
     char str[INET6_ADDRSTRLEN];
     int port;
-    
+
     if (addr.ss_family == AF_INET6)
     {
         const sockaddr_in6 *addr6 = (const sockaddr_in6 *)&addr;
@@ -214,6 +208,6 @@ std::string ClientUdpTunnel::addr_to_string(const sockaddr_storage &addr, sockle
         inet_ntop(AF_INET, &addr4->sin_addr, str, INET_ADDRSTRLEN);
         port = ntohs(addr4->sin_port);
     }
-    
+
     return std::string(str) + ":" + std::to_string(port);
 }
