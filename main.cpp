@@ -39,7 +39,7 @@ int main(int argc, char *argv[])
               "-l,--local",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.local_host = val.substr(0, pos);
@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
               "-r,--remote",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.remote_host = val.substr(0, pos);
@@ -75,7 +75,7 @@ int main(int argc, char *argv[])
               "-R,--response",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.response_host = val.substr(0, pos);
@@ -95,7 +95,7 @@ int main(int argc, char *argv[])
               "-l,--local",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.local_host = val.substr(0, pos);
@@ -113,7 +113,7 @@ int main(int argc, char *argv[])
               "-r,--remote",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.remote_host = val.substr(0, pos);
@@ -132,7 +132,7 @@ int main(int argc, char *argv[])
               "-R,--response",
               [&config](const std::string &val)
               {
-                  auto pos = val.find(':');
+                  auto pos = val.find_last_of(':');
                   if (pos != std::string::npos)
                   {
                       config.response_host = val.substr(0, pos);
