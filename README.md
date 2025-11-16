@@ -15,10 +15,10 @@ Bidirectional lightweight tunnel for TCP and UDP forwarding with connection pool
 
 ```
              persistent * -> 8000                 pooled      * -> 8001                 persistent * -> 8002
-[Client App] --------data-------> [Client Tunnel] ---encrypted data---> [Server Tunnel] --------data-------> [Target Server]
+[Source App] --------data-------> [Client Tunnel] ---encrypted data---> [Server Tunnel] --------data-------> [Target Server]
 
              persistent * -> 8000                 pooled      8003 <- *                 persistent * -> 8002
-[Client App] <-------data-------- [Client Tunnel] <---encrypted data--- [Server Tunnel] <-------data-------- [Target Server]
+[Source App] <-------data-------- [Client Tunnel] <---encrypted data--- [Server Tunnel] <-------data-------- [Target Server]
 ```
 
 Idea is that connections between App/Server and Tunnel are persistent, so apps seeing it as usual connections, but connections between Tunnels are constantly being recreated. Connection pool is independent in both directions, so both hosts with Tunnels must have public IP address
@@ -47,18 +47,22 @@ make install  # Install to /usr/local/bin
 Client:
 
 ```bash
-#             <type> <local listener> <remote tunnel> <local response listener> <encryption key>
-./tiny-tunnel client 0.0.0.0 8000     127.0.0.1 8001  0.0.0.0 8803              mysecretkey
+#             <crypto> <encryption key> <protocol> <type> <local listener> <remote server>   <local response listener>
+./tiny-tunnel -c xor   -k mysecretkey   -p udp     client -l 0.0.0.0:8000  -r 127.0.0.1 8001 -R 0.0.0.0 8803
 ```
 
 Server:
 
 ```bash
-#             <type> <local listener> <remote tunnel> <remote response listener> <encryption key>
-./tiny-tunnel server 0.0.0.0 8001     127.0.0.1 8002  0.0.0.0 8803              mysecretkey
+#             <crypto> <encryption key> <protocol> <type> <local listener> <remote target>   <remote response>
+./tiny-tunnel -c xor   -k mysecretkey   -p udp     server -l 0.0.0.0:8001  -r 127.0.0.1 8002 -R 127.0.0.1 8803
 ```
 
-For UDP add flag `--udp` at end
+All traffic can be encrypted using selected algorithm:
+
+1. `aes` - AES-256-CBC with PBKDF
+2. `xor` - XOR
+
 You can also mix IPv4 and IPv6 addresses as needed for different endpoints.
 
 ## Configuration
@@ -76,12 +80,7 @@ Each packet contains an 8-byte header with:
 - `session_id` (4 bytes): Unique session identifier
 - `data_len` (2 bytes): Payload length
 - `flags` (1 byte): Protocol flags (0x01 for UDP)
-- `reserved` (1 byte): Reserved for future use
-
-All traffic is encrypted using selected algorithm:
-
-1. AES-256-CBC with PBKDF
-2. _its all for now_
+- `direction` (1 byte): Direction
 
 ## Performance
 

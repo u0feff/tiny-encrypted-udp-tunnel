@@ -1,6 +1,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <CLI/CLI.hpp>
 #include "crypto/aes_crypto.hpp"
 #include "crypto/xor_crypto.hpp"
 #include "tunnels/tunnel.hpp"
@@ -9,83 +10,225 @@
 #include "tunnels/client_udp_tunnel.hpp"
 #include "tunnels/server_udp_tunnel.hpp"
 
+struct Config
+{
+    std::string local_host = "::";
+    uint16_t local_port;
+    std::string remote_host;
+    uint16_t remote_port;
+    std::string response_host;
+    uint16_t response_port;
+    std::string key;
+    std::string crypto;
+    std::string protocol;
+};
+
 int main(int argc, char *argv[])
 {
-    if (argc < 8)
-    {
-        std::cerr << "Usage: " << argv[0]
-                  << " <client|server> <local_addr> <local_port> <remote_addr> <remote_port> "
-                  << "<response_addr> <response_port> <key> [--udp]" << std::endl;
-        std::cerr << "\nFor client:" << std::endl;
-        std::cerr << "  local_addr:local_port - listen for client connections" << std::endl;
-        std::cerr << "  remote_addr:remote_port - send requests to server" << std::endl;
-        std::cerr << "  response_addr:response_port - listen for responses from server" << std::endl;
-        std::cerr << "\nFor server:" << std::endl;
-        std::cerr << "  local_addr:local_port - listen for requests" << std::endl;
-        std::cerr << "  remote_addr:remote_port - send requests to destination" << std::endl;
-        std::cerr << "  response_addr:response_port - send responses to client" << std::endl;
-        return 1;
-    }
+    CLI::App app{"Tiny Tunnel - Rotating encrypted TCP/UDP tunnel"};
 
-    std::string mode = argv[1];
-    std::string local_addr = argv[2];
-    int local_port = std::stoi(argv[3]);
-    std::string remote_addr = argv[4];
-    int remote_port = std::stoi(argv[5]);
-    std::string response_addr = argv[6];
-    int response_port = std::stoi(argv[7]);
-    std::string key = argv[8];
-    bool use_udp = (argc > 9 && std::string(argv[9]) == "--udp");
+    app.set_version_flag("-v,--version", "1.0.0");
+
+    Config config;
+
+    auto client = app.add_subcommand("client", "Run as client (accepts local connections and forwards to server)");
+    auto server = app.add_subcommand("server", "Run as server (receives from client and forwards to remote)");
+
+    // Client-specific options
+    client->add_option_function<std::string>(
+              "-l,--local",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.local_host = val.substr(0, pos);
+                      config.local_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      config.local_port = std::stoi(val);
+                  }
+              },
+              "Local listen address (host:port or port)")
+        ->required();
+
+    client->add_option_function<std::string>(
+              "-r,--remote",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.remote_host = val.substr(0, pos);
+                      config.remote_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      throw CLI::ValidationError("Remote must be specified as host:port");
+                  }
+              },
+              "Remote address (host:port)")
+        ->required();
+
+    client->add_option_function<std::string>(
+              "-R,--response",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.response_host = val.substr(0, pos);
+                      config.response_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      config.response_host = "::";
+                      config.response_port = std::stoi(val);
+                  }
+              },
+              "Response listen address (host:port or port)")
+        ->required();
+
+    // Server-specific options
+    server->add_option_function<std::string>(
+              "-l,--local",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.local_host = val.substr(0, pos);
+                      config.local_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      config.local_port = std::stoi(val);
+                  }
+              },
+              "Local listen address (host:port or port)")
+        ->required();
+
+    server->add_option_function<std::string>(
+              "-r,--remote",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.remote_host = val.substr(0, pos);
+                      config.remote_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      config.remote_host = "::1";
+                      config.remote_port = std::stoi(val);
+                  }
+              },
+              "Remote address (host:port or port)")
+        ->required();
+
+    server->add_option_function<std::string>(
+              "-R,--response",
+              [&config](const std::string &val)
+              {
+                  auto pos = val.find(':');
+                  if (pos != std::string::npos)
+                  {
+                      config.response_host = val.substr(0, pos);
+                      config.response_port = std::stoi(val.substr(pos + 1));
+                  }
+                  else
+                  {
+                      throw CLI::ValidationError("Remote must be specified as host:port");
+                  }
+              },
+              "Response address (host:port)")
+        ->required();
+
+    // Common options
+    app.add_option("-c,--crypto", config.crypto, "Crypto")
+        ->required()
+        ->check(CLI::IsMember({"xor", "aes"}));
+
+    app.add_option("-k,--key", config.key, "Crypto key")
+        ->required();
+
+    app.add_option("-p,--protocol", config.protocol, "Network protocol")
+        ->required()
+        ->check(CLI::IsMember({"udp", "tcp"}));
+
+    app.require_subcommand(1);
+
+    CLI11_PARSE(app, argc, argv);
 
     try
     {
-        // auto crypto = std::make_shared<AesCrypto>(key);
-        auto crypto = std::make_shared<XorCrypto>(key);
+        std::shared_ptr<Crypto> crypto;
+        if (config.crypto == "aes")
+        {
+            crypto = std::make_shared<AesCrypto>(config.key);
+        }
+        else if (config.crypto == "xor")
+        {
+            crypto = std::make_shared<XorCrypto>(config.key);
+        }
+        else
+        {
+            throw std::runtime_error("Unknown crypto: " + config.crypto);
+        }
 
         std::unique_ptr<Tunnel> tunnel;
 
-        if (mode == "client")
+        if (client->parsed())
         {
-            if (use_udp)
+            if (config.protocol == "udp")
             {
                 tunnel = std::make_unique<ClientUdpTunnel>(
-                    local_addr, local_port,
-                    remote_addr, remote_port,
-                    response_addr, response_port,
+                    config.local_host, config.local_port,
+                    config.remote_host, config.remote_port,
+                    config.response_host, config.response_port,
                     crypto);
             }
-            else
+            else if (config.protocol == "tcp")
             {
                 tunnel = std::make_unique<ClientTcpTunnel>(
-                    local_addr, local_port,
-                    remote_addr, remote_port,
-                    response_addr, response_port,
-                    crypto);
-            }
-        }
-        else if (mode == "server")
-        {
-            if (use_udp)
-            {
-                tunnel = std::make_unique<ServerUdpTunnel>(
-                    local_addr, local_port,
-                    remote_addr, remote_port,
-                    response_addr, response_port,
+                    config.local_host, config.local_port,
+                    config.remote_host, config.remote_port,
+                    config.response_host, config.response_port,
                     crypto);
             }
             else
             {
-                tunnel = std::make_unique<ServerTcpTunnel>(
-                    local_addr, local_port,
-                    remote_addr, remote_port,
-                    response_addr, response_port,
+                throw std::runtime_error("Unknown protocol: " + config.protocol);
+            }
+        }
+        else if (server->parsed())
+        {
+            if (config.protocol == "udp")
+            {
+                tunnel = std::make_unique<ServerUdpTunnel>(
+                    config.local_host, config.local_port,
+                    config.remote_host, config.remote_port,
+                    config.response_host, config.response_port,
                     crypto);
+            }
+            else if (config.protocol == "tcp")
+            {
+                tunnel = std::make_unique<ServerTcpTunnel>(
+                    config.local_host, config.local_port,
+                    config.remote_host, config.remote_port,
+                    config.response_host, config.response_port,
+                    crypto);
+            }
+            else
+            {
+                throw std::runtime_error("Unknown protocol: " + config.protocol);
             }
         }
         else
         {
-            std::cerr << "Invalid mode. Use 'client' or 'server'" << std::endl;
-            return 1;
+            throw std::runtime_error("Unknown mode");
         }
 
         tunnel->run();
