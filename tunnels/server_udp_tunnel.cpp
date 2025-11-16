@@ -8,6 +8,7 @@
 #include "server_udp_tunnel.hpp"
 #include "tunnel_header.hpp"
 #include "tunnel_direction.hpp"
+#include "network_utils.hpp"
 
 ServerUdpTunnel::ServerUdpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
@@ -33,15 +34,14 @@ ServerUdpTunnel::~ServerUdpTunnel()
 
 void ServerUdpTunnel::setup_listener()
 {
-    listen_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int addr_family = get_address_family(local_addr);
+    listen_fd = socket(addr_family, SOCK_DGRAM, 0);
 
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(local_port);
-    inet_pton(AF_INET, local_addr.c_str(), &addr.sin_addr);
+    sockaddr_storage addr;
+    socklen_t addr_len;
+    setup_sockaddr(addr, addr_len, local_addr, local_port);
 
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    if (bind(listen_fd, (struct sockaddr *)&addr, addr_len) < 0)
     {
         throw std::runtime_error("Bind failed");
     }
@@ -79,7 +79,7 @@ void ServerUdpTunnel::run()
 void ServerUdpTunnel::handle_request_data()
 {
     uint8_t buffer[BUFFER_SIZE];
-    sockaddr_in sender_addr;
+    sockaddr_storage sender_addr;
     socklen_t addr_len = sizeof(sender_addr);
 
     ssize_t len = recvfrom(listen_fd, buffer, BUFFER_SIZE, 0,

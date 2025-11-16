@@ -6,30 +6,30 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/tcp.h>
+#include "network_utils.hpp"
 
 Connection::Connection(const std::string &addr, int port, Protocol proto)
     : protocol(proto), creation_time(std::chrono::steady_clock::now())
 {
+    int addr_family = get_address_family(addr);
+    
     if (protocol == Protocol::UDP)
     {
-        sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+        sockfd = socket(addr_family, SOCK_DGRAM, 0);
     }
     else
     {
-        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        sockfd = socket(addr_family, SOCK_STREAM, 0);
         int flag = 1;
         setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
         setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
     }
 
-    memset(&remote_addr, 0, sizeof(remote_addr));
-    remote_addr.sin_family = AF_INET;
-    remote_addr.sin_port = htons(port);
-    inet_pton(AF_INET, addr.c_str(), &remote_addr.sin_addr);
+    setup_sockaddr(remote_addr, remote_addr_len, addr, port);
 
     if (protocol == Protocol::TCP)
     {
-        if (connect(sockfd, (struct sockaddr *)&remote_addr, sizeof(remote_addr)) < 0)
+        if (connect(sockfd, (struct sockaddr *)&remote_addr, remote_addr_len) < 0)
         {
             close(sockfd);
             throw std::runtime_error("Connection failed");
@@ -61,7 +61,7 @@ ssize_t Connection::send_data(const uint8_t *data, size_t len)
     if (protocol == Protocol::UDP)
     {
         return sendto(sockfd, data, len, 0,
-                      (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+                      (struct sockaddr *)&remote_addr, remote_addr_len);
     }
     return send(sockfd, data, len, MSG_NOSIGNAL);
 }
@@ -70,7 +70,7 @@ ssize_t Connection::recv_data(uint8_t *buffer, size_t max_len)
 {
     if (protocol == Protocol::UDP)
     {
-        socklen_t addr_len = sizeof(remote_addr);
+        socklen_t addr_len = remote_addr_len;
         return recvfrom(sockfd, buffer, max_len, 0,
                         (struct sockaddr *)&remote_addr, &addr_len);
     }

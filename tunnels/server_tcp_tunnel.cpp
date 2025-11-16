@@ -8,6 +8,7 @@
 #include "server_tcp_tunnel.hpp"
 #include "tunnel_header.hpp"
 #include "tunnel_direction.hpp"
+#include "network_utils.hpp"
 
 ServerTcpTunnel::ServerTcpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
@@ -33,17 +34,16 @@ ServerTcpTunnel::~ServerTcpTunnel()
 
 void ServerTcpTunnel::setup_listener()
 {
-    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int addr_family = get_address_family(local_addr);
+    listen_fd = socket(addr_family, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(local_port);
-    inet_pton(AF_INET, local_addr.c_str(), &addr.sin_addr);
+    sockaddr_storage addr;
+    socklen_t addr_len;
+    setup_sockaddr(addr, addr_len, local_addr, local_port);
 
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    if (bind(listen_fd, (struct sockaddr *)&addr, addr_len) < 0)
     {
         throw std::runtime_error("Bind failed");
     }
@@ -89,7 +89,7 @@ void ServerTcpTunnel::run()
 
 void ServerTcpTunnel::handle_new_connection()
 {
-    sockaddr_in client_addr;
+    sockaddr_storage client_addr;
     socklen_t addr_len = sizeof(client_addr);
     int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
 

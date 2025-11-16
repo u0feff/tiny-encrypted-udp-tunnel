@@ -10,7 +10,8 @@
 
 struct UdpSession
 {
-    sockaddr_in client_addr;
+    sockaddr_storage client_addr;
+    socklen_t client_addr_len;
     uint32_t session_id;
     std::chrono::steady_clock::time_point last_activity;
 };
@@ -29,16 +30,16 @@ private:
     int response_listen_fd;
     int epoll_fd;
     std::atomic<uint32_t> next_session_id{1};
-    std::unordered_map<uint32_t, sockaddr_in> session_to_client;
+    std::unordered_map<uint32_t, std::pair<sockaddr_storage, socklen_t>> session_to_client;
     std::unordered_map<std::string, UdpSession> client_to_session;
 
     void setup_listener();
     void setup_response_listener();
     void handle_client_data();
     void handle_response_data();
-    void forward_request_to_server(uint8_t *data, size_t len, const sockaddr_in &sender);
+    void forward_request_to_server(uint8_t *data, size_t len, const sockaddr_storage &sender, socklen_t sender_len);
     void forward_response_to_client(uint8_t *data, size_t len);
-    std::string addr_to_string(const sockaddr_in &addr);
+    std::string addr_to_string(const sockaddr_storage &addr, socklen_t addr_len);
 
 public:
     ClientUdpTunnel(const std::string &local_addr, int local_port,
