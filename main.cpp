@@ -2,6 +2,7 @@
 #include <memory>
 #include <string>
 #include "crypto/aes_crypto.hpp"
+#include "crypto/xor_crypto.hpp"
 #include "tunnels/tunnel.hpp"
 #include "tunnels/client_tcp_tunnel.hpp"
 #include "tunnels/server_tcp_tunnel.hpp"
@@ -38,7 +39,8 @@ int main(int argc, char *argv[])
 
     try
     {
-        auto crypto = std::make_shared<AesCrypto>(key);
+        // auto crypto = std::make_shared<AesCrypto>(key);
+        auto crypto = std::make_shared<XorCrypto>(key);
 
         std::unique_ptr<Tunnel> tunnel;
 

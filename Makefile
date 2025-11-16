@@ -6,6 +6,7 @@ TARGET = bin/tiny-tunnel
 
 SOURCES = main.cpp \
           crypto/aes_crypto.cpp \
+          crypto/xor_crypto.cpp \
           connection.cpp \
           connection_pool.cpp \
           session_store.cpp \
@@ -19,6 +20,7 @@ OBJECTS = $(SOURCES:.cpp=.o)
 HEADERS = config.hpp \
           crypto/crypto.hpp \
           crypto/aes_crypto.hpp \
+          crypto/xor_crypto.hpp \
           connection.hpp \
           connection_pool.hpp \
           session_store.hpp \
