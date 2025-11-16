@@ -20,13 +20,14 @@ private:
     std::unique_ptr<ConnectionPool> response_pool;
     int listen_fd;
     int epoll_fd;
-    std::unordered_map<int, uint32_t> target_to_session;
+    std::unordered_map<int, uint32_t> target_fd_to_session_id;
 
     void setup_listener();
-    void handle_new_connection();
-    void handle_data(int fd);
-    void forward_to_target(int server_fd, uint8_t *data, size_t len);
-    void handle_target_response(int target_fd);
+    void handle_client_connection();
+    void handle_request_data(int fd);
+    void forward_request_to_target(uint8_t *data, size_t len);
+    void add_target_to_epoll(Connection *target_conn, uint32_t session_id);
+    void handle_response_data(int target_fd);
     void forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len);
 
 public:

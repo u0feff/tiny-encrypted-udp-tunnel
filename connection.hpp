@@ -12,7 +12,8 @@ class Connection
 {
 private:
     int sockfd;
-    sockaddr_in remote_addr;
+    sockaddr_storage remote_addr;
+    socklen_t remote_addr_len;
     std::atomic<int> message_count{0};
     std::chrono::steady_clock::time_point creation_time;
     Protocol protocol;

@@ -8,6 +8,7 @@
 #include "server_udp_tunnel.hpp"
 #include "tunnel_header.hpp"
 #include "tunnel_direction.hpp"
+#include "network_utils.hpp"
 
 ServerUdpTunnel::ServerUdpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
@@ -33,15 +34,14 @@ ServerUdpTunnel::~ServerUdpTunnel()
 
 void ServerUdpTunnel::setup_listener()
 {
-    listen_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int addr_family = get_address_family(local_addr);
+    listen_fd = socket(addr_family, SOCK_DGRAM, 0);
 
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(local_port);
-    inet_pton(AF_INET, local_addr.c_str(), &addr.sin_addr);
+    sockaddr_storage addr;
+    socklen_t addr_len;
+    setup_sockaddr(addr, addr_len, local_addr, local_port);
 
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    if (bind(listen_fd, (struct sockaddr *)&addr, addr_len) < 0)
     {
         throw std::runtime_error("Bind failed");
     }
@@ -70,7 +70,7 @@ void ServerUdpTunnel::run()
             }
             else
             {
-                handle_target_response(events[i].data.fd);
+                handle_response_data(events[i].data.fd);
             }
         }
     }
@@ -79,19 +79,19 @@ void ServerUdpTunnel::run()
 void ServerUdpTunnel::handle_request_data()
 {
     uint8_t buffer[BUFFER_SIZE];
-    sockaddr_in sender_addr;
+    sockaddr_storage sender_addr;
     socklen_t addr_len = sizeof(sender_addr);
 
     ssize_t len = recvfrom(listen_fd, buffer, BUFFER_SIZE, 0,
                            (struct sockaddr *)&sender_addr, &addr_len);
 
-    if (len > 0)
-    {
-        forward_to_target(buffer, len);
-    }
+    if (len <= 0)
+        return;
+
+    forward_request_to_target(buffer, len);
 }
 
-void ServerUdpTunnel::forward_to_target(uint8_t *data, size_t len)
+void ServerUdpTunnel::forward_request_to_target(uint8_t *data, size_t len)
 {
     auto decrypted = crypto->decrypt(data, len);
     if (decrypted.size() < sizeof(TunnelHeader))
@@ -107,28 +107,23 @@ void ServerUdpTunnel::forward_to_target(uint8_t *data, size_t len)
         return;
 
     Connection *target_conn = session_store->get_or_create_session(session_id);
-    if (target_conn)
-    {
-        target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
+    if (!target_conn)
+        return;
 
-        if (session_targets.find(session_id) == session_targets.end())
-        {
-            session_targets[session_id] = target_conn;
-            add_target_to_epoll(target_conn, session_id);
-        }
-    }
+    target_conn->send_data(decrypted.data() + sizeof(TunnelHeader), data_len);
+
+    add_target_to_epoll(target_conn, session_id);
 }
 
 void ServerUdpTunnel::add_target_to_epoll(Connection *target_conn, uint32_t session_id)
 {
     int target_fd = target_conn->get_fd();
 
-    if (target_fd_to_session.find(target_fd) != target_fd_to_session.end())
-    {
+    auto it = target_fd_to_session_id.find(target_fd);
+    if (it != target_fd_to_session_id.end())
         return;
-    }
 
-    target_fd_to_session[target_fd] = session_id;
+    target_fd_to_session_id[target_fd] = session_id;
 
     epoll_event ev;
     ev.events = EPOLLIN;
@@ -136,36 +131,30 @@ void ServerUdpTunnel::add_target_to_epoll(Connection *target_conn, uint32_t sess
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, target_fd, &ev);
 }
 
-void ServerUdpTunnel::handle_target_response(int target_fd)
+void ServerUdpTunnel::handle_response_data(int target_fd)
 {
     uint8_t buffer[BUFFER_SIZE];
 
-    auto it = target_fd_to_session.find(target_fd);
-    if (it == target_fd_to_session.end())
-    {
+    auto it = target_fd_to_session_id.find(target_fd);
+    if (it == target_fd_to_session_id.end())
         return;
-    }
 
     uint32_t session_id = it->second;
-    Connection *target_conn = session_targets[session_id];
-
+    Connection *target_conn = session_store->get_or_create_session(session_id);
     if (!target_conn)
+        return;
+
+    ssize_t len = target_conn->recv_data(buffer, BUFFER_SIZE);
+
+    if (len <= 0)
     {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, target_fd, nullptr);
+        target_fd_to_session_id.erase(target_fd);
+        session_store->remove_session(session_id);
         return;
     }
 
-    ssize_t len = target_conn->recv_data(buffer, BUFFER_SIZE);
-    if (len > 0)
-    {
-        forward_response_to_client(session_id, buffer, len);
-    }
-    else if (len == 0)
-    {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, target_fd, nullptr);
-        target_fd_to_session.erase(target_fd);
-        session_targets.erase(session_id);
-        session_store->remove_session(session_id);
-    }
+    forward_response_to_client(session_id, buffer, len);
 }
 
 void ServerUdpTunnel::forward_response_to_client(uint32_t session_id, uint8_t *data, size_t len)
