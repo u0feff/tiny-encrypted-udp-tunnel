@@ -8,8 +8,8 @@
 #include <netinet/tcp.h>
 #include "network_utils.hpp"
 
-Connection::Connection(const std::string &addr, int port, Protocol proto)
-    : protocol(proto), creation_time(std::chrono::steady_clock::now())
+Connection::Connection(const std::string &addr, int port, Protocol proto, int rotate_interval_ms)
+    : creation_time(std::chrono::steady_clock::now()), protocol(proto), rotate_interval_ms(rotate_interval_ms)
 {
     int addr_family = get_address_family(addr);
     
@@ -52,7 +52,7 @@ bool Connection::should_rotate() const
     auto now = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - creation_time);
     return message_count >= MAX_MESSAGES_PER_CONNECTION ||
-           duration.count() > ROTATE_INTERVAL_MS;
+           duration.count() > rotate_interval_ms;
 }
 
 ssize_t Connection::send_data(const uint8_t *data, size_t len)

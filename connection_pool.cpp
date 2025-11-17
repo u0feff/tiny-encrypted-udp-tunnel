@@ -1,9 +1,9 @@
 #include "connection_pool.hpp"
 
-ConnectionPool::ConnectionPool(const std::string &addr, int port, Protocol proto)
-    : remote_addr(addr), remote_port(port), protocol(proto)
+ConnectionPool::ConnectionPool(const std::string &addr, int port, Protocol proto, int pool_size, int rotate_interval_ms)
+    : remote_addr(addr), remote_port(port), protocol(proto), pool_size(pool_size), rotate_interval_ms(rotate_interval_ms)
 {
-    for (int i = 0; i < POOL_SIZE; ++i)
+    for (int i = 0; i < pool_size; ++i)
     {
         add_connection();
     }
@@ -12,7 +12,7 @@ ConnectionPool::ConnectionPool(const std::string &addr, int port, Protocol proto
 void ConnectionPool::add_connection()
 {
     std::lock_guard<std::mutex> lock(pool_mutex);
-    connections.push_back(std::make_unique<Connection>(remote_addr, remote_port, protocol));
+    connections.push_back(std::make_unique<Connection>(remote_addr, remote_port, protocol, rotate_interval_ms));
 }
 
 Connection *ConnectionPool::get_current()
@@ -33,7 +33,7 @@ void ConnectionPool::rotate()
 {
     current_index++;
     size_t idx = current_index % connections.size();
-    connections[idx] = std::make_unique<Connection>(remote_addr, remote_port, protocol);
+    connections[idx] = std::make_unique<Connection>(remote_addr, remote_port, protocol, rotate_interval_ms);
 }
 
 std::vector<int> ConnectionPool::get_all_fds()
