@@ -17,9 +17,10 @@ private:
     std::atomic<int> message_count{0};
     std::chrono::steady_clock::time_point creation_time;
     Protocol protocol;
+    int rotate_interval_ms;
 
 public:
-    Connection(const std::string &addr, int port, Protocol proto);
+    Connection(const std::string &addr, int port, Protocol proto, int rotate_interval_ms);
     ~Connection();
     bool should_rotate() const;
     ssize_t send_data(const uint8_t *data, size_t len);
