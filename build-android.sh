@@ -56,9 +56,21 @@ esac
 
 # --- Detect host platform ---
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+HOST_ARCH="$(uname -m)"
 case "$HOST_OS" in
     linux)  HOST_TAG="linux-x86_64" ;;
-    darwin) HOST_TAG="darwin-x86_64" ;;
+    darwin)
+        if [ "$HOST_ARCH" = "arm64" ]; then
+            HOST_TAG="darwin-x86_64"
+            # NDK ships x86_64 binaries on macOS; fall back if needed
+            if [ ! -d "${NDK}/toolchains/llvm/prebuilt/darwin-x86_64" ] && \
+               [ -d "${NDK}/toolchains/llvm/prebuilt/darwin-arm64" ]; then
+                HOST_TAG="darwin-arm64"
+            fi
+        else
+            HOST_TAG="darwin-x86_64"
+        fi
+        ;;
     *)      echo "Error: Unsupported host OS: $HOST_OS"; exit 1 ;;
 esac
 
@@ -102,12 +114,19 @@ if [ ! -f "${OPENSSL_INSTALL}/lib/libssl.a" ]; then
     tar xzf "$OPENSSL_TAR" -C "$DEPS_DIR"
 
     pushd "$OPENSSL_SRC" > /dev/null
+    OPENSSL_LOG="${DEPS_DIR}/openssl-build.log"
     ./Configure "$OPENSSL_TARGET" \
         -D__ANDROID_API__="$API_LEVEL" \
         --prefix="$OPENSSL_INSTALL" \
-        no-shared no-tests
-    make -j"$(nproc)" > /dev/null 2>&1
-    make install_sw > /dev/null 2>&1
+        no-shared no-tests > "$OPENSSL_LOG" 2>&1
+    if ! make -j"$(nproc)" >> "$OPENSSL_LOG" 2>&1; then
+        echo "Error: OpenSSL build failed. See ${OPENSSL_LOG}"
+        exit 1
+    fi
+    if ! make install_sw >> "$OPENSSL_LOG" 2>&1; then
+        echo "Error: OpenSSL install failed. See ${OPENSSL_LOG}"
+        exit 1
+    fi
     popd > /dev/null
 
     rm -rf "$OPENSSL_SRC"
