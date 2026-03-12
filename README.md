@@ -42,6 +42,32 @@ make
 make install  # Install to /usr/local/bin
 ```
 
+### Android
+
+The included `build-android.sh` script cross-compiles the project using the Android NDK. It automatically downloads and builds OpenSSL and CLI11 for the target architecture.
+
+#### Prerequisites
+
+- [Android NDK](https://developer.android.com/ndk/downloads) (r21 or later)
+- `curl` for downloading dependencies
+- Set `ANDROID_NDK_HOME` (or `ANDROID_NDK`) to the NDK path
+
+#### Building for Android
+
+```bash
+# Build for arm64 (default)
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh
+
+# Build for a specific ABI and API level
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh arm64-v8a 24
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh armeabi-v7a 24
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh x86_64 24
+```
+
+Supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`
+
+The compiled binary will be at `build-android/<ABI>/bin/tiny-tunnel`.
+
 ## Usage
 
 Client:
