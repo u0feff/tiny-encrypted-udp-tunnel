@@ -1,6 +1,4 @@
 #!/bin/bash
-# build-android.sh - Cross-compile tiny-tunnel for Android using the NDK
-#
 # Usage: ./build-android.sh [ABI] [API_LEVEL]
 #   ABI:       arm64-v8a (default), armeabi-v7a, x86, x86_64
 #   API_LEVEL: Android API level, minimum 24 (default: 24)
@@ -10,26 +8,22 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ABI="${1:-arm64-v8a}"
 API_LEVEL="${2:-24}"
-BUILD_DIR="${SCRIPT_DIR}/build-android/${ABI}"
-DEPS_DIR="${BUILD_DIR}/deps"
+
 OPENSSL_VERSION="3.4.1"
 CLI11_VERSION="2.4.2"
 
-# --- Locate Android NDK ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN_DIR="${SCRIPT_DIR}/bin/android/${ABI}"
+DEPS_DIR="${SCRIPT_DIR}/deps/android"
+
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK:-}}"
 if [ -z "$NDK" ]; then
     echo "Error: Set ANDROID_NDK_HOME or ANDROID_NDK to the NDK path"
     exit 1
 fi
-if [ ! -d "$NDK" ]; then
-    echo "Error: NDK directory not found: $NDK"
-    exit 1
-fi
 
-# --- Map ABI to target triple ---
 case "$ABI" in
     arm64-v8a)
         TARGET="aarch64-linux-android"
@@ -49,148 +43,93 @@ case "$ABI" in
         ;;
     *)
         echo "Error: Unsupported ABI: $ABI"
-        echo "Supported: arm64-v8a, armeabi-v7a, x86, x86_64"
         exit 1
         ;;
 esac
 
-# --- Detect host platform ---
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 HOST_ARCH="$(uname -m)"
 case "$HOST_OS" in
-    linux)  HOST_TAG="linux-x86_64" ;;
+    linux)
+        HOST_TAG="linux-x86_64"
+        ;;
     darwin)
-        if [ "$HOST_ARCH" = "arm64" ]; then
-            HOST_TAG="darwin-x86_64"
-            # NDK ships x86_64 binaries on macOS; fall back if needed
-            if [ ! -d "${NDK}/toolchains/llvm/prebuilt/darwin-x86_64" ] && \
-               [ -d "${NDK}/toolchains/llvm/prebuilt/darwin-arm64" ]; then
-                HOST_TAG="darwin-arm64"
-            fi
+        if [ "$HOST_ARCH" = "arm64" ] && [ -d "${NDK}/toolchains/llvm/prebuilt/darwin-arm64" ]; then
+            HOST_TAG="darwin-arm64"
         else
             HOST_TAG="darwin-x86_64"
         fi
         ;;
-    *)      echo "Error: Unsupported host OS: $HOST_OS"; exit 1 ;;
+    *)
+        echo "Error: Unsupported host OS: $HOST_OS"
+        exit 1
+        ;;
 esac
 
 TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/${HOST_TAG}"
-if [ ! -d "$TOOLCHAIN" ]; then
-    echo "Error: NDK toolchain not found at ${TOOLCHAIN}"
-    exit 1
-fi
 
-export CC="${TOOLCHAIN}/bin/${TARGET}${API_LEVEL}-clang"
-export CXX="${TOOLCHAIN}/bin/${TARGET}${API_LEVEL}-clang++"
-export AR="${TOOLCHAIN}/bin/llvm-ar"
-export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-export STRIP="${TOOLCHAIN}/bin/llvm-strip"
-export PATH="${TOOLCHAIN}/bin:${PATH}"
+CXX="${TOOLCHAIN}/bin/${TARGET}${API_LEVEL}-clang++"
+STRIP="${TOOLCHAIN}/bin/llvm-strip"
+
 export ANDROID_NDK_ROOT="$NDK"
+export PATH="${TOOLCHAIN}/bin:${PATH}"
 
-echo "=== Building tiny-tunnel for Android ==="
-echo "ABI:       $ABI"
-echo "API Level: $API_LEVEL"
-echo "NDK:       $NDK"
-echo "CXX:       $CXX"
-echo ""
+mkdir -p "${DEPS_DIR}"
 
-mkdir -p "$BUILD_DIR" "$DEPS_DIR"
-
-# --- Build OpenSSL ---
-OPENSSL_INSTALL="${DEPS_DIR}/openssl"
-if [ ! -f "${OPENSSL_INSTALL}/lib/libssl.a" ]; then
-    echo "=== Building OpenSSL ${OPENSSL_VERSION} for ${ABI} ==="
-    OPENSSL_SRC="${DEPS_DIR}/openssl-${OPENSSL_VERSION}"
-    OPENSSL_TAR="${DEPS_DIR}/openssl-${OPENSSL_VERSION}.tar.gz"
+OPENSSL_DIR="${DEPS_DIR}/openssl"
+OPENSSL_API="${OPENSSL_DIR}/api/${API_LEVEL}"
+OPENSSL_SRC="${OPENSSL_DIR}/src/${OPENSSL_VERSION}"
+OPENSSL_TAR="${OPENSSL_DIR}/src/${OPENSSL_VERSION}.tar.gz"
+if [ ! -f "${OPENSSL_API}/lib/libssl.a" ]; then
+    mkdir -p "${OPENSSL_DIR}"
 
     if [ ! -f "$OPENSSL_TAR" ]; then
-        echo "Downloading OpenSSL..."
+        mkdir -p "$(dirname "${OPENSSL_TAR}")"
         curl -fSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" \
             -o "$OPENSSL_TAR"
     fi
 
     rm -rf "$OPENSSL_SRC"
-    tar xzf "$OPENSSL_TAR" -C "$DEPS_DIR"
+    mkdir -p "$OPENSSL_SRC"
+    tar xzf "$OPENSSL_TAR" --strip-components=1 -C "$OPENSSL_SRC"
 
     pushd "$OPENSSL_SRC" > /dev/null
-    OPENSSL_LOG="${DEPS_DIR}/openssl-build.log"
     ./Configure "$OPENSSL_TARGET" \
         -D__ANDROID_API__="$API_LEVEL" \
-        --prefix="$OPENSSL_INSTALL" \
-        no-shared no-tests > "$OPENSSL_LOG" 2>&1
-    if ! make -j"$(nproc)" >> "$OPENSSL_LOG" 2>&1; then
-        echo "Error: OpenSSL build failed. See ${OPENSSL_LOG}"
+        --prefix="$OPENSSL_API" \
+        no-shared no-tests
+    if ! make -j"$(nproc)"; then
+        echo "Error: OpenSSL build failed"
         exit 1
     fi
-    if ! make install_sw >> "$OPENSSL_LOG" 2>&1; then
-        echo "Error: OpenSSL install failed. See ${OPENSSL_LOG}"
+    if ! make install_sw; then
+        echo "Error: OpenSSL install failed"
         exit 1
     fi
     popd > /dev/null
-
-    rm -rf "$OPENSSL_SRC"
-    echo "OpenSSL built successfully"
-else
-    echo "=== OpenSSL already built for ${ABI}, skipping ==="
 fi
 
-# --- Download CLI11 ---
 CLI11_DIR="${DEPS_DIR}/cli11"
-CLI11_HEADER="${CLI11_DIR}/CLI/CLI.hpp"
+CLI11_API="${CLI11_DIR}/${CLI11_VERSION}"
+CLI11_HEADER="${CLI11_API}/CLI/CLI.hpp"
 if [ ! -f "$CLI11_HEADER" ]; then
-    echo "=== Downloading CLI11 ${CLI11_VERSION} ==="
-    mkdir -p "${CLI11_DIR}/CLI"
+    mkdir -p "$(dirname "${CLI11_HEADER}")"
     curl -fSL "https://github.com/CLIUtils/CLI11/releases/download/v${CLI11_VERSION}/CLI11.hpp" \
         -o "$CLI11_HEADER"
-    echo "CLI11 downloaded successfully"
-else
-    echo "=== CLI11 already downloaded, skipping ==="
 fi
 
-# --- Build tiny-tunnel ---
-echo "=== Compiling tiny-tunnel for ${ABI} ==="
-OUTPUT_DIR="${BUILD_DIR}/bin"
-mkdir -p "$OUTPUT_DIR"
+CXXFLAGS="-I${OPENSSL_API}/include -I${CLI11_API}"
+LDFLAGS="-L${OPENSSL_API}/lib -ldl -static-libstdc++"
 
-CXXFLAGS="-std=c++17 -O3 -Wall -Wextra -pthread"
-CXXFLAGS="${CXXFLAGS} -I${SCRIPT_DIR}"
-CXXFLAGS="${CXXFLAGS} -I${OPENSSL_INSTALL}/include"
-CXXFLAGS="${CXXFLAGS} -I${CLI11_DIR}"
+make clean
+make build \
+    CXX="$CXX" \
+    BIN_DIR="$BIN_DIR" \
+    EXTRA_CXXFLAGS="$CXXFLAGS" \
+    EXTRA_LDFLAGS="$LDFLAGS"
 
-LDFLAGS="-L${OPENSSL_INSTALL}/lib"
-LDFLAGS="${LDFLAGS} -lssl -lcrypto -pthread"
-# Android needs explicit linking of log and dl
-LDFLAGS="${LDFLAGS} -ldl"
-LDFLAGS="${LDFLAGS} -static-libstdc++"
-
-SOURCES=(
-    main.cpp
-    crypto/aes_crypto.cpp
-    crypto/xor_crypto.cpp
-    connection.cpp
-    connection_pool.cpp
-    session_store.cpp
-    tunnels/client_tcp_tunnel.cpp
-    tunnels/server_tcp_tunnel.cpp
-    tunnels/client_udp_tunnel.cpp
-    tunnels/server_udp_tunnel.cpp
-)
-
-OBJECTS=()
-for src in "${SOURCES[@]}"; do
-    obj="${BUILD_DIR}/$(echo "$src" | sed 's/\.cpp$/.o/')"
-    mkdir -p "$(dirname "$obj")"
-    echo "  CC  $src"
-    $CXX $CXXFLAGS -c "${SCRIPT_DIR}/${src}" -o "$obj"
-    OBJECTS+=("$obj")
-done
-
-echo "  LD  tiny-tunnel"
-$CXX "${OBJECTS[@]}" -o "${OUTPUT_DIR}/tiny-tunnel" $LDFLAGS
-$STRIP "${OUTPUT_DIR}/tiny-tunnel"
+$STRIP "${BIN_DIR}/tiny-tunnel"
 
 echo ""
 echo "=== Build complete ==="
-echo "Binary: ${OUTPUT_DIR}/tiny-tunnel"
-file "${OUTPUT_DIR}/tiny-tunnel" 2>/dev/null || true
+echo "Binary: ${BIN_DIR}/tiny-tunnel"

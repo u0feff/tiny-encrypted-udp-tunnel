@@ -23,7 +23,7 @@ Bidirectional lightweight tunnel for TCP and UDP forwarding with connection pool
 
 Idea is that connections between App/Server and Tunnel are persistent, so apps seeing it as usual connections, but connections between Tunnels are constantly being recreated. Connection pool is independent in both directions, so both hosts with Tunnels must have public IP address
 
-## Setup
+## Setup (Linux)
 
 ### Dependencies
 
@@ -42,31 +42,26 @@ make
 make install  # Install to /usr/local/bin
 ```
 
-### Android
+## Setup (Android)
 
-The included `build-android.sh` script cross-compiles the project using the Android NDK. It automatically downloads and builds OpenSSL and CLI11 for the target architecture.
+### Dependencies
 
-#### Prerequisites
+Requires [Android NDK](https://developer.android.com/ndk/downloads) (r21 or later)
 
-- [Android NDK](https://developer.android.com/ndk/downloads) (r21 or later)
-- `curl` for downloading dependencies
-- Set `ANDROID_NDK_HOME` (or `ANDROID_NDK`) to the NDK path
-
-#### Building for Android
+#### Arch
 
 ```bash
-# Build for arm64 (default)
-ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh
+yay android-ndk # AUR package
+```
 
-# Build for a specific ABI and API level
-ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh arm64-v8a 24
-ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh armeabi-v7a 24
-ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh x86_64 24
+### Building
+
+```bash
+# Build for arm64-v8a (default)
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh
 ```
 
 Supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`
-
-The compiled binary will be at `build-android/<ABI>/bin/tiny-tunnel`.
 
 ## Usage
 

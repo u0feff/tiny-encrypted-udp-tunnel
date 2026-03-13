@@ -1,10 +1,9 @@
-NAME = tiny-tunnel
+BIN_DIR ?= bin
+TARGET = $(BIN_DIR)/tiny-tunnel
 
-BIN_DIR = bin
-
-CXX = g++
-CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -pthread -I.
-LDFLAGS = -lcrypto -lssl -pthread
+CXX ?= g++
+CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -pthread -I. $(EXTRA_CXXFLAGS)
+LDFLAGS = -lcrypto -lssl -pthread $(EXTRA_LDFLAGS)
 
 SOURCES = main.cpp \
 		  crypto/aes_crypto.cpp \
@@ -38,21 +37,20 @@ OBJECTS = $(SOURCES:.cpp=.o)
 
 all: build
 
-build: _directories $(OBJECTS)
-	$(CXX) $(OBJECTS) -o $(BIN_DIR)/$(NAME) $(LDFLAGS)
+build: _directories $(TARGET)
 
-build-android: _directories $(OBJECTS)
-# Some other script with other bin paths
+$(TARGET): $(OBJECTS)
+	$(CXX) $(OBJECTS) -o $(TARGET) $(LDFLAGS)
 
 %.o: %.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 debug: CXXFLAGS += -g -DDEBUG -fsanitize=address
 debug: LDFLAGS += -fsanitize=address
-debug: clean build
+debug: build
 
 install: build
-	install -m 755 $(BIN_DIR)/$(NAME) /usr/local/bin/
+	install -m 755 $(TARGET) /usr/local/bin/
 
 clean:
 	rm -f $(OBJECTS)
