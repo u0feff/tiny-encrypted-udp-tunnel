@@ -23,7 +23,7 @@ Bidirectional lightweight tunnel for TCP and UDP forwarding with connection pool
 
 Idea is that connections between App/Server and Tunnel are persistent, so apps seeing it as usual connections, but connections between Tunnels are constantly being recreated. Connection pool is independent in both directions, so both hosts with Tunnels must have public IP address
 
-## Setup
+## Setup (Linux)
 
 ### Dependencies
 
@@ -41,6 +41,27 @@ sudo apt install libssl-dev libcli11-dev
 make
 make install  # Install to /usr/local/bin
 ```
+
+## Setup (Android)
+
+### Dependencies
+
+Requires [Android NDK](https://developer.android.com/ndk/downloads) (r21 or later)
+
+#### Arch
+
+```bash
+yay android-ndk # AUR package
+```
+
+### Building
+
+```bash
+# Build for arm64-v8a (default)
+ANDROID_NDK_HOME=/path/to/ndk ./build-android.sh
+```
+
+Supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`
 
 ## Usage
 
