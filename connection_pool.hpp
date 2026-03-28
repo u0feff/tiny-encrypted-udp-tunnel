@@ -19,9 +19,11 @@ private:
     std::string remote_addr;
     int remote_port;
     Protocol protocol;
+    int pool_size;
+    int rotate_interval_ms;
 
 public:
-    ConnectionPool(const std::string &addr, int port, Protocol proto);
+    ConnectionPool(const std::string &addr, int port, Protocol proto, int pool_size, int rotate_interval_ms);
     void add_connection();
     Connection *get_current();
     void rotate();

@@ -16,9 +16,10 @@ private:
     std::string target_addr;
     int target_port;
     Protocol protocol;
+    int rotate_interval_ms;
 
 public:
-    SessionStore(const std::string &addr, int port, Protocol proto);
+    SessionStore(const std::string &addr, int port, Protocol proto, int rotate_interval_ms);
     Connection *get_or_create_session(uint32_t session_id);
     void remove_session(uint32_t session_id);
 };

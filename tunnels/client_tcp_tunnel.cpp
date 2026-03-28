@@ -16,12 +16,12 @@ constexpr uintptr_t CONN_TYPE_RESPONSE = 4;
 ClientTcpTunnel::ClientTcpTunnel(const std::string &local_addr, int local_port,
                                  const std::string &remote_addr, int remote_port,
                                  const std::string &response_addr, int response_port,
-                                 std::shared_ptr<Crypto> crypto)
+                                 std::shared_ptr<Crypto> crypto, int pool_size, int rotate_interval_ms)
     : local_addr(local_addr), local_port(local_port),
       response_addr(response_addr), response_port(response_port),
       crypto(crypto)
 {
-    request_pool = std::make_unique<ConnectionPool>(remote_addr, remote_port, Protocol::TCP);
+    request_pool = std::make_unique<ConnectionPool>(remote_addr, remote_port, Protocol::TCP, pool_size, rotate_interval_ms);
     epoll_fd = epoll_create1(0);
     setup_listener();
     setup_response_listener();

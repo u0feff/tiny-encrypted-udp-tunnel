@@ -38,7 +38,7 @@ public:
     ClientTcpTunnel(const std::string &local_addr, int local_port,
                     const std::string &remote_addr, int remote_port,
                     const std::string &response_addr, int response_port,
-                    std::shared_ptr<Crypto> crypto);
+                    std::shared_ptr<Crypto> crypto, int pool_size, int rotate_interval_ms);
     ~ClientTcpTunnel();
     void run() override;
 };

@@ -21,6 +21,8 @@ struct Config
     std::string key;
     std::string crypto;
     std::string protocol;
+    int pool_size = 3;
+    int rotate_interval_ms = 5000;
 };
 
 int main(int argc, char *argv[])
@@ -158,6 +160,14 @@ int main(int argc, char *argv[])
         ->required()
         ->check(CLI::IsMember({"udp", "tcp"}));
 
+    app.add_option("--pool-size", config.pool_size, "Connection pool size")
+        ->default_val(3)
+        ->check(CLI::PositiveNumber);
+
+    app.add_option("--rotate-interval", config.rotate_interval_ms, "Rotation interval in milliseconds")
+        ->default_val(5000)
+        ->check(CLI::PositiveNumber);
+
     app.require_subcommand(1);
 
     CLI11_PARSE(app, argc, argv);
@@ -188,7 +198,7 @@ int main(int argc, char *argv[])
                     config.local_host, config.local_port,
                     config.remote_host, config.remote_port,
                     config.response_host, config.response_port,
-                    crypto);
+                    crypto, config.pool_size, config.rotate_interval_ms);
             }
             else if (config.protocol == "tcp")
             {
@@ -196,7 +206,7 @@ int main(int argc, char *argv[])
                     config.local_host, config.local_port,
                     config.remote_host, config.remote_port,
                     config.response_host, config.response_port,
-                    crypto);
+                    crypto, config.pool_size, config.rotate_interval_ms);
             }
             else
             {
@@ -211,7 +221,7 @@ int main(int argc, char *argv[])
                     config.local_host, config.local_port,
                     config.remote_host, config.remote_port,
                     config.response_host, config.response_port,
-                    crypto);
+                    crypto, config.pool_size, config.rotate_interval_ms);
             }
             else if (config.protocol == "tcp")
             {
@@ -219,7 +229,7 @@ int main(int argc, char *argv[])
                     config.local_host, config.local_port,
                     config.remote_host, config.remote_port,
                     config.response_host, config.response_port,
-                    crypto);
+                    crypto, config.pool_size, config.rotate_interval_ms);
             }
             else
             {
